@@ -30,15 +30,18 @@ network_encryptor_load_db_env() {
   local env_file=""
   if [ -n "${DB_ENV_FILE:-}" ] && [ -f "${DB_ENV_FILE}" ]; then
     env_file="${DB_ENV_FILE}"
+  elif [ -f "/opt/SEP/be/.env" ]; then
+    env_file="/opt/SEP/be/.env"
   elif [ -f "${NETWORK_ENCRYPTOR_ROOT}/.db.env" ]; then
     env_file="${NETWORK_ENCRYPTOR_ROOT}/.db.env"
   elif [ -f "/opt/db.env" ]; then
     env_file="/opt/db.env"
   else
-    echo "[FATAL] DB env not found. Use: DB_ENV_FILE=path, ${NETWORK_ENCRYPTOR_ROOT}/.db.env, or /opt/db.env" >&2
+    echo "[FATAL] DB env not found. Use: DB_ENV_FILE=path or /opt/SEP/be/.env" >&2
     return 1
   fi
 
+  echo "[ENV] loading POSTGRES_* from ${env_file}"
   network_encryptor_load_db_env_from_file "${env_file}"
 
   : "${POSTGRES_SERVER:?POSTGRES_SERVER is required}"
@@ -52,7 +55,6 @@ network_encryptor_load_db_env() {
   return 0
 }
 
-# psql wrapper — always uses POSTGRES_* from /opt/db.env (not legacy DB_* / xdpdb).
 ne_psql() {
   psql -v ON_ERROR_STOP=1 -h "${POSTGRES_SERVER}" -p "${POSTGRES_PORT}" \
     -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" "$@"

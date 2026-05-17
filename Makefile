@@ -1,6 +1,5 @@
 CC     = gcc
 CLANG  = clang
-AR     = ar
 
 CFLAGS = -D_GNU_SOURCE -Iinc -I./include -Wall -O2 $(shell pg_config --includedir 2>/dev/null | xargs -I{} echo -I{})
 LDFLAGS = -Wl,-Bstatic -lxdp -lbpf -Wl,-Bdynamic -lelf -lz -lpthread -lssl -lcrypto -lpq
@@ -26,12 +25,11 @@ APP_SRC = main.c \
           src/core/fragment.c
 APP_OBJ = $(APP_SRC:.c=.o)
 
-DB_LIB_SRC = src/db/config.c \
-             src/db/db_config.c \
-             src/db/db_env.c \
-             src/db/db_runtime.c
-DB_LIB_OBJ = $(DB_LIB_SRC:.c=.o)
-DB_LIB     = $(BIN_DIR)/libdb_loader.a
+DB_SRC = src/db/config.c \
+         src/db/db_config.c \
+         src/db/db_env.c \
+         src/db/db_runtime.c
+DB_OBJ = $(DB_SRC:.c=.o)
 
 BPF_SRC = bpf/xdp_redirect.c \
           bpf/xdp_wan_redirect.c
@@ -40,16 +38,13 @@ BPF_OBJ = bpf/xdp_redirect.o \
 
 .PHONY: all clean dirs
 
-all: dirs $(BPF_OBJ) $(DB_LIB) $(TARGET)
+all: dirs $(BPF_OBJ) $(TARGET)
 
 dirs:
 	@mkdir -p $(BIN_DIR)
 
-$(DB_LIB): $(DB_LIB_OBJ)
-	$(AR) rcs $@ $(DB_LIB_OBJ)
-
-$(TARGET): $(APP_OBJ) $(DB_LIB)
-	$(CC) -o $@ $(APP_OBJ) $(DB_LIB) $(LDFLAGS)
+$(TARGET): $(APP_OBJ) $(DB_OBJ)
+	$(CC) -o $@ $(APP_OBJ) $(DB_OBJ) $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

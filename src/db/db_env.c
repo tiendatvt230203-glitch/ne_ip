@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 static int ne_env_key_allowed(const char *key) {
     static const char *allowed[] = {
@@ -42,6 +43,10 @@ static void ne_sync_pgpassword(void) {
         setenv("PGPASSWORD", pass, 1);
 }
 
+static int ne_env_file_readable(const char *path) {
+    return path && path[0] && access(path, R_OK) == 0;
+}
+
 void load_env_from_file(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -49,25 +54,32 @@ void load_env_from_file(const char *path) {
         return;
     }
 
-    char line[512];
+    fprintf(stderr, "[ENV] loading POSTGRES_* from %s\n", path);
+
+    char line[2048];
     while (fgets(line, sizeof(line), f)) {
         char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0' || *p == '\n' || *p == '#') continue;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p == '\0' || *p == '\n' || *p == '#')
+            continue;
+        if (strncmp(p, "POSTGRES_", 9) != 0)
+            continue;
 
         char *eq = strchr(p, '=');
-        if (!eq) continue;
+        if (!eq)
+            continue;
 
         *eq = '\0';
         char *key = p;
         char *val = eq + 1;
 
         char *end = key + strlen(key) - 1;
-        while (end > key && (*end == ' ' || *end == '\t')) {
+        while (end > key && (*end == ' ' || *end == '\t'))
             *end-- = '\0';
-        }
 
-        while (*val == ' ' || *val == '\t') val++;
+        while (*val == ' ' || *val == '\t')
+            val++;
 
         size_t len = strlen(val);
         while (len > 0 && (val[len - 1] == '\n' || val[len - 1] == '\r')) {
@@ -76,13 +88,38 @@ void load_env_from_file(const char *path) {
 
         strip_env_quotes(val);
 
-        if (*key && *val && ne_env_key_allowed(key)) {
+        if (*key && *val && ne_env_key_allowed(key))
             setenv(key, val, 1);
-        }
     }
 
     fclose(f);
     ne_sync_pgpassword();
+}
+
+int load_env_default(void) {
+    const char *override = getenv("DB_ENV_FILE");
+    static const char *fallbacks[] = {
+        NE_DEFAULT_ENV_FILE,
+        "/opt/db.env",
+        NULL,
+    };
+
+    if (ne_env_file_readable(override)) {
+        load_env_from_file(override);
+        return 0;
+    }
+
+    for (int i = 0; fallbacks[i]; i++) {
+        if (ne_env_file_readable(fallbacks[i])) {
+            load_env_from_file(fallbacks[i]);
+            return 0;
+        }
+    }
+
+    fprintf(stderr,
+            "[ENV] No env file found (tried DB_ENV_FILE, %s, /opt/db.env)\n",
+            NE_DEFAULT_ENV_FILE);
+    return -1;
 }
 
 int ne_postgres_conn_fill(struct ne_postgres_conn *out) {
@@ -98,7 +135,8 @@ int ne_postgres_conn_fill(struct ne_postgres_conn *out) {
     if (!host || !host[0] || !port || !port[0] || !user || !user[0] ||
         !dbname || !dbname[0] || !pass || !pass[0]) {
         fprintf(stderr,
-                "[DB] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in /opt/db.env\n");
+                "[DB] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD "
+                "(expected in " NE_DEFAULT_ENV_FILE ")\n");
         return -1;
     }
 

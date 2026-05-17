@@ -30,9 +30,9 @@ struct runtime_state {
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s -id <ne_profiles.id>   # load profile from DB, then LISTEN %s\n"
-            "  %s                         # wait for pg_notify on %s only\n",
-            prog, NOTIFY_CHANNEL, prog, NOTIFY_CHANNEL);
+            "  %s -id <ne_profiles.id>\n"
+            "  %s\n",
+            prog, prog);
 }
 
 static int parse_startup_profile_id(int argc, char **argv, int *out_id) {
@@ -94,11 +94,8 @@ static void *forwarder_thread_main(void *arg) {
         rt->running = 0;
         return NULL;
     }
-    fprintf(stderr,
-            "[RUNTIME] forwarder_init OK — locals=%d wans=%d (XDP attach runs inside init; "
-            "if locals>0 and no prog on LAN iface, check journal for bpf/XSK errors above)\n",
-            rt->fwd.local_count,
-            rt->fwd.wan_count);
+    fprintf(stderr, "[RUNTIME] forwarder_init OK locals=%d wans=%d\n",
+            rt->fwd.local_count, rt->fwd.wan_count);
     rt->running = 1;
     forwarder_run(&rt->fwd);
     forwarder_cleanup(&rt->fwd);
@@ -133,9 +130,7 @@ static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
             fprintf(stderr, "[FATAL] failed to start forwarder\n");
             return -1;
         }
-        fprintf(stderr,
-                "[OK] loaded ne_profiles.id=%d (%d active profile(s)) — "
-                "confirm \"[RUNTIME] forwarder_init OK\" in log\n",
+        fprintf(stderr, "[OK] loaded ne_profiles.id=%d profiles=%d\n",
                 trigger_id, active_id_count);
         return 0;
     }
@@ -158,11 +153,14 @@ static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
 int main(int argc, char **argv) {
     setbuf(stderr, NULL);
 
-    load_env_from_file("/opt/db.env");
+    if (load_env_default() != 0) {
+        fprintf(stderr, "[FATAL] DB env file not found (set DB_ENV_FILE or use " NE_DEFAULT_ENV_FILE ")\n");
+        return 1;
+    }
     struct ne_postgres_conn pg;
     if (ne_postgres_conn_fill(&pg) != 0) {
         fprintf(stderr,
-                "[FATAL] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in /opt/db.env\n");
+                "[FATAL] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in " NE_DEFAULT_ENV_FILE "\n");
         return 1;
     }
 

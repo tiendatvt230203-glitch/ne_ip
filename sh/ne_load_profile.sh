@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Load sql_options seed for ne_profiles.id, then pg_notify('xdp_start').
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=db_env.sh
 source "${SCRIPT_DIR}/db_env.sh"
 network_encryptor_load_db_env
 

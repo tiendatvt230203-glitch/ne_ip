@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Apply schema.sql (ne_* tables) to POSTGRES_DB from .db.env or /opt/db.env
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=db_env.sh
 source "${SCRIPT_DIR}/db_env.sh"
 network_encryptor_load_db_env
 
@@ -32,6 +30,3 @@ if [ "${n:-0}" != "4" ]; then
   exit 1
 fi
 echo "[OK] ne_profiles, ne_policies, ne_lan, ne_wan"
-
-echo
-echo "Next: sh/ne_load_profile.sh <ne_profiles.id> [seed.sql]"
