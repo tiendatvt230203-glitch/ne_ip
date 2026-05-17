@@ -296,6 +296,23 @@ int local_rewrite_dest_mac(struct arp_cache *local_cache,
     return -1;
 }
 
+static void format_ipv4_be(uint32_t ip_be, char *buf, size_t bufsz) {
+    struct in_addr a = { .s_addr = ip_be };
+    if (!inet_ntop(AF_INET, &a, buf, bufsz))
+        snprintf(buf, bufsz, "?");
+}
+
+void local_log_arp_ready(const struct arp_cache *c) {
+    if (!c)
+        return;
+
+    fprintf(stderr,
+            "[LAN ARP] if=%s mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+            c->ifname,
+            c->if_mac[0], c->if_mac[1], c->if_mac[2],
+            c->if_mac[3], c->if_mac[4], c->if_mac[5]);
+}
+
 void wan_log_peer_mac(struct arp_cache *wan_cache,
                        const char *ifname,
                        const struct wan_config *wan_cfg) {
@@ -304,18 +321,20 @@ void wan_log_peer_mac(struct arp_cache *wan_cache,
     if (wan_cfg->dst_ip == 0)
         return;
 
-    char ipbuf[INET_ADDRSTRLEN] = {0};
-    struct in_addr a = { .s_addr = wan_cfg->dst_ip };
-    inet_ntop(AF_INET, &a, ipbuf, sizeof(ipbuf));
+    char peer_ip[INET_ADDRSTRLEN] = {0};
+    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+    format_ipv4_be(wan_cfg->dst_ip, peer_ip, sizeof(peer_ip));
+    if (wan_cache->if_ip != 0)
+        format_ipv4_be(wan_cache->if_ip, local_ip, sizeof(local_ip));
 
     uint8_t mac[6];
     for (int tries = 0; tries < 10; tries++) {
         if (arp_cache_lookup(wan_cache, wan_cfg->dst_ip, mac)) {
             fprintf(stderr,
-                    "[WAN ARP] if=%s local_ip=%u peer_ip=%s dest_mac=%02x:%02x:%02x:%02x:%02x:%02x (peer resolved)\n",
+                    "[WAN ARP] if=%s local_ip=%s peer_ip=%s dest_mac=%02x:%02x:%02x:%02x:%02x:%02x (peer resolved)\n",
                     ifname,
-                    (unsigned)ntohl(wan_cache->if_ip),
-                    ipbuf,
+                    local_ip,
+                    peer_ip,
                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
             return;
         }
@@ -323,9 +342,9 @@ void wan_log_peer_mac(struct arp_cache *wan_cache,
         usleep(100000);
     }
     fprintf(stderr,
-            "[WAN ARP] if=%s local_ip=%u peer_ip=%s dest_mac=UNRESOLVED (check L2 reachability / dst_ip / firewall)\n",
+            "[WAN ARP] if=%s local_ip=%s peer_ip=%s dest_mac=UNRESOLVED (check L2 reachability / dst_ip / firewall)\n",
             ifname,
-            (unsigned)ntohl(wan_cache->if_ip),
-            ipbuf);
+            local_ip,
+            peer_ip);
 }
 

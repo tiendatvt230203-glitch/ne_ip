@@ -2334,10 +2334,9 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
             pthread_create(&tid, NULL, arp_listener_thread, &g_arp[i]);
             pthread_detach(tid);
             g_arp_inited = 1;
-            fprintf(stderr, "[ARP] ready on %s (ip=%u)\n",
-                    g_arp[i].ifname, (unsigned)ntohl(g_arp[i].if_ip));
+            local_log_arp_ready(&g_arp[i]);
         } else {
-            fprintf(stderr, "[ARP] WARN: cannot init local ARP on %s\n",
+            fprintf(stderr, "[LAN ARP] WARN: cannot init on %s\n",
                     fwd->locals[i].ifname);
         }
     }
