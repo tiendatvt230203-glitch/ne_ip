@@ -552,13 +552,9 @@ static int load_local_rows(struct app_config *cfg, PGresult *res) {
             return -1;
         }
         strncpy(loc->ifname, v, IF_NAMESIZE - 1);
-
-        if (local_config_fill_ipv4_from_iface(loc) != 0) {
-            fprintf(stderr,
-                    "[DB LOCAL] %s: cannot read IPv4 from kernel (assign IP on interface or fix name).\n",
-                    loc->ifname);
-            return -1;
-        }
+        loc->ip = 0;
+        loc->netmask = 0;
+        loc->network = 0;
 
         cfg->local_count++;
     }
@@ -595,10 +591,8 @@ static int load_wan_rows(struct app_config *cfg, PGresult *res) {
         strncpy(wan->ifname, v, IF_NAMESIZE - 1);
 
         v = PQgetvalue(res, row, PQfnumber(res, "dst_ip"));
-        if (v && v[0] != '\0' && parse_ipv4_addr(v, &wan->dst_ip) != 0) {
-            fprintf(stderr, "[DB WAN] Invalid dst_ip: %s\n", v);
-            return -1;
-        }
+        if (v && v[0] != '\0')
+            (void)parse_ipv4_addr(v, &wan->dst_ip);
         if (wan->dst_ip != 0) {
             memset(wan->src_mac, 0, MAC_LEN);
             memset(wan->dst_mac, 0, MAC_LEN);
@@ -608,17 +602,13 @@ static int load_wan_rows(struct app_config *cfg, PGresult *res) {
         int dst_mac_col = PQfnumber(res, "dst_mac");
         if (src_mac_col >= 0) {
             v = PQgetvalue(res, row, src_mac_col);
-            if (v && v[0] != '\0' && parse_mac(v, wan->src_mac) != 0) {
-                fprintf(stderr, "[DB WAN] Invalid src_mac: %s\n", v);
-                return -1;
-            }
+            if (v && v[0] != '\0')
+                (void)parse_mac(v, wan->src_mac);
         }
         if (dst_mac_col >= 0) {
             v = PQgetvalue(res, row, dst_mac_col);
-            if (v && v[0] != '\0' && parse_mac(v, wan->dst_mac) != 0) {
-                fprintf(stderr, "[DB WAN] Invalid dst_mac: %s\n", v);
-                return -1;
-            }
+            if (v && v[0] != '\0')
+                (void)parse_mac(v, wan->dst_mac);
         }
 
         cfg->wan_count++;

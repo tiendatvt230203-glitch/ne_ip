@@ -21,7 +21,6 @@ INSERT INTO ne_policies (
 );
 
 INSERT INTO ne_lan (interface, profile_id, created_by) VALUES
-    ('eno2', 30, 'seed'),
     ('enp7s0', 30, 'seed');
 
 INSERT INTO ne_wan (interface, profile_id, dst_ip, weight, created_by) VALUES

@@ -447,9 +447,6 @@ int local_config_fill_ipv4_from_iface(struct local_config *loc) {
     ifr.ifr_addr.sa_family = AF_INET;
 
     if (ioctl(fd, SIOCGIFADDR, &ifr) < 0) {
-        fprintf(stderr,
-                "[CONFIG] local %s: SIOCGIFADDR failed (%s). Assign an IPv4 to this interface.\n",
-                loc->ifname, strerror(errno));
         close(fd);
         return -1;
     }
@@ -460,11 +457,10 @@ int local_config_fill_ipv4_from_iface(struct local_config *loc) {
     memset(&ifr, 0, sizeof(ifr));
     snprintf(ifr.ifr_name, IFNAMSIZ, "%s", loc->ifname);
     if (ioctl(fd, SIOCGIFNETMASK, &ifr) < 0) {
-        fprintf(stderr,
-                "[CONFIG] local %s: SIOCGIFNETMASK failed (%s).\n",
-                loc->ifname, strerror(errno));
+        loc->netmask = htonl(0xFFFFFFFFu);
+        loc->network = loc->ip & loc->netmask;
         close(fd);
-        return -1;
+        return 0;
     }
 
     struct sockaddr_in *nm = (struct sockaddr_in *)&ifr.ifr_netmask;
