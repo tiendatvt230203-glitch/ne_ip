@@ -30,8 +30,8 @@ struct runtime_state {
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s -id <ne_profiles.id>\n"
-            "  %s\n",
+            "  %s -id <ne_profiles.id>   load profile and run (XDP/forwarder)\n"
+            "  %s                       idle: listen only, traffic unchanged\n",
             prog, prog);
 }
 
@@ -197,6 +197,11 @@ int main(int argc, char **argv) {
             PQfinish(listen_conn);
             return 1;
         }
+    } else {
+        fprintf(stderr,
+                "[WAIT] idle — no XDP/forwarder; traffic uses kernel default path.\n"
+                "[WAIT] start with: %s -id <ne_profiles.id>\n",
+                argv[0]);
     }
 
     for (;;) {
@@ -221,6 +226,14 @@ int main(int argc, char **argv) {
             if (id <= 0) {
                 fprintf(stderr, "[WARN] ignoring NOTIFY with invalid id payload: \"%s\"\n",
                         notify->extra ? notify->extra : "");
+                PQfreemem(notify);
+                continue;
+            }
+
+            if (!rt.has_thread) {
+                fprintf(stderr,
+                        "[WAIT] NOTIFY id=%d ignored (not running). Use: %s -id %d\n",
+                        id, argv[0], id);
                 PQfreemem(notify);
                 continue;
             }

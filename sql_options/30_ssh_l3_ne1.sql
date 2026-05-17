@@ -6,33 +6,18 @@ DELETE FROM ne_wan WHERE profile_id = 30;
 DELETE FROM ne_profiles WHERE id = 30;
 
 INSERT INTO ne_profiles (id, name, description, weight_enable, latency_enable, loss_enable, created_by)
-VALUES (30, 'ip_ssh_l3', 'L3 SSH NE1 client1->client2', FALSE, FALSE, FALSE, 'seed');
+VALUES (30, 'ip_l2_encrypt', 'L2 encrypt 192.168.9.2 -> 192.168.182.2', FALSE, FALSE, FALSE, 'seed');
 
 INSERT INTO ne_policies (
     id, profile_id, priority, action, proto,
     src_ip, invert_src_ip, dst_ip, invert_dst_ip,
     src_port, dst_port, method, nonce, encryption_key, created_by
-) VALUES
-(
-    22, 30, 1, 'L3', 'tcp',
-    ARRAY['192.168.9.0/24']::text[], FALSE,
-    ARRAY['192.168.180.0/24']::text[], FALSE,
-    ARRAY['ANY']::text[], ARRAY['22']::text[],
-    'aes-gcm-128', 12, '00112233445566778899aabbccddeeff', 'seed'
-),
-(
-    23, 30, 2, 'L3', 'tcp',
-    ARRAY['192.168.180.2/32']::text[], FALSE,
+) VALUES (
+    40, 30, 1, 'L2', NULL,
     ARRAY['192.168.9.2/32']::text[], FALSE,
-    ARRAY['22']::text[], ARRAY['ANY']::text[],
-    'aes-gcm-128', 12, '00112233445566778899aabbccddeeff', 'seed'
-),
-(
-    99, 30, 3, 'bypass', NULL,
-    ARRAY['0.0.0.0/0']::text[], FALSE,
-    ARRAY['0.0.0.0/0']::text[], FALSE,
+    ARRAY['192.168.182.2/32']::text[], FALSE,
     ARRAY['ANY']::text[], ARRAY['ANY']::text[],
-    NULL, NULL, NULL, 'seed'
+    'aes-gcm-128', 12, '00112233445566778899aabbccddeeff', 'seed'
 );
 
 INSERT INTO ne_lan (interface, profile_id, created_by) VALUES
