@@ -655,11 +655,7 @@ static int select_wan_idx_for_packet(struct forwarder *fwd,
                     return allowed[0];
                 if (n > 1) {
                     const int *wp = any_weight ? weights : NULL;
-                    return flow_table_get_wan_profile(&g_flow_table,
-                                                      src_ip, dst_ip,
-                                                      src_port, dst_port,
-                                                      protocol, pkt_len,
-                                                      allowed, n, wp);
+                    return flow_table_pick_wan_per_packet(allowed, wp, n);
                 }
             } else if (p->wan_count == 1) {
                 int wi = p->wan_indices[0];
@@ -748,44 +744,6 @@ static void log_wan_peer_mac(struct forwarder *fwd, int wan_idx) {
     if (!fwd || wan_idx < 0 || wan_idx >= fwd->wan_count)
         return;
     wan_log_peer_mac(&g_wan_arp[wan_idx], fwd->wans[wan_idx].ifname, &fwd->cfg->wans[wan_idx]);
-}
-
-static void local_arp_resolve_policy_hosts(struct app_config *cfg, int local_idx) {
-    if (!cfg || local_idx < 0 || local_idx >= cfg->local_count)
-        return;
-
-    const char *ifname = cfg->locals[local_idx].ifname;
-    uint32_t seen[32];
-    int n_seen = 0;
-
-    for (int pi = 0; pi < cfg->policy_count; pi++) {
-        const struct crypto_policy *p = &cfg->policies[pi];
-        uint32_t hosts[2];
-        int nhosts = 0;
-
-        if (!p->src_any && p->src_mask == htonl(0xffffffffu))
-            hosts[nhosts++] = p->src_net;
-        if (!p->dst_any && p->dst_mask == htonl(0xffffffffu))
-            hosts[nhosts++] = p->dst_net;
-
-        for (int h = 0; h < nhosts; h++) {
-            uint32_t ip = hosts[h];
-            if (ip == 0)
-                continue;
-            int dup = 0;
-            for (int s = 0; s < n_seen; s++) {
-                if (seen[s] == ip) {
-                    dup = 1;
-                    break;
-                }
-            }
-            if (dup)
-                continue;
-            if (n_seen < 32)
-                seen[n_seen++] = ip;
-            local_log_peer_mac(&g_arp[local_idx], ifname, ip);
-        }
-    }
 }
 
 struct packet_job {
@@ -2375,7 +2333,7 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
                             "[LAN] %s gateway %s — hosts in same subnet use ARP via this IP\n",
                             cfg->locals[i].ifname, ipstr);
             }
-            local_arp_resolve_policy_hosts(cfg, i);
+            lan_arp_resolve_policy_hosts(&g_arp[i], cfg, i);
             memcpy(fwd->locals[i].src_mac, g_arp[i].if_mac, MAC_LEN);
             memcpy(cfg->locals[i].src_mac, g_arp[i].if_mac, MAC_LEN);
         } else {

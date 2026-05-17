@@ -57,6 +57,9 @@ void local_log_arp_ready(const struct arp_cache *c);
 void local_log_peer_mac(struct arp_cache *local_cache,
                         const char *ifname,
                         uint32_t peer_ip);
+void lan_arp_resolve_policy_hosts(struct arp_cache *c,
+                                  struct app_config *cfg,
+                                  int local_idx);
 
 #endif
 

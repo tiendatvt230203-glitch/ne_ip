@@ -361,6 +361,53 @@ void local_log_peer_mac(struct arp_cache *local_cache,
     log_peer_arp_resolved(local_cache, "LAN ARP", ifname, peer_ip);
 }
 
+static int ip_on_local_subnet(const struct local_config *loc, uint32_t ip) {
+    if (!loc || ip == 0 || loc->netmask == 0)
+        return 0;
+    return ((ip & loc->netmask) == loc->network);
+}
+
+void lan_arp_resolve_policy_hosts(struct arp_cache *c,
+                                  struct app_config *cfg,
+                                  int local_idx) {
+    if (!c || !cfg || local_idx < 0 || local_idx >= cfg->local_count)
+        return;
+
+    const struct local_config *loc = &cfg->locals[local_idx];
+    const char *ifname = loc->ifname;
+    uint32_t seen[32];
+    int n_seen = 0;
+
+    for (int pi = 0; pi < cfg->policy_count; pi++) {
+        const struct crypto_policy *p = &cfg->policies[pi];
+        uint32_t hosts[2];
+        int nhosts = 0;
+
+        if (!p->src_any && p->src_mask == htonl(0xffffffffu))
+            hosts[nhosts++] = p->src_net;
+        if (!p->dst_any && p->dst_mask == htonl(0xffffffffu))
+            hosts[nhosts++] = p->dst_net;
+
+        for (int h = 0; h < nhosts; h++) {
+            uint32_t ip = hosts[h];
+            if (ip == 0 || !ip_on_local_subnet(loc, ip))
+                continue;
+            int dup = 0;
+            for (int s = 0; s < n_seen; s++) {
+                if (seen[s] == ip) {
+                    dup = 1;
+                    break;
+                }
+            }
+            if (dup)
+                continue;
+            if (n_seen < 32)
+                seen[n_seen++] = ip;
+            local_log_peer_mac(c, ifname, ip);
+        }
+    }
+}
+
 void wan_log_peer_mac(struct arp_cache *wan_cache,
                        const char *ifname,
                        const struct wan_config *wan_cfg) {
