@@ -1,5 +1,6 @@
 #include <bpf/libbpf.h>
 #include <libpq-fe.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@
 #include "main_diag.h"
 
 #define NOTIFY_CHANNEL "xdp_start"
+#define MAX_ACTIVE_PROFILE_IDS 32
 
 struct runtime_state {
     pthread_t thread;
@@ -28,8 +30,51 @@ struct runtime_state {
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s               # daemon mode (LISTEN %s)\n",
-            prog, NOTIFY_CHANNEL);
+            "  %s -id <ne_profiles.id>   # load profile from DB, then LISTEN %s\n"
+            "  %s                         # wait for pg_notify on %s only\n",
+            prog, NOTIFY_CHANNEL, prog, NOTIFY_CHANNEL);
+}
+
+static int parse_startup_profile_id(int argc, char **argv, int *out_id) {
+    *out_id = -1;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-id") == 0) {
+            if (*out_id >= 0) {
+                fprintf(stderr, "[FATAL] -id specified more than once\n");
+                return -1;
+            }
+            if (i + 1 >= argc) {
+                fprintf(stderr, "[FATAL] -id requires ne_profiles.id\n");
+                return -1;
+            }
+            char *end = NULL;
+            long v = strtol(argv[i + 1], &end, 10);
+            if (!end || *end != '\0' || v < 0 || v > INT_MAX) {
+                fprintf(stderr, "[FATAL] invalid ne_profiles.id: %s\n", argv[i + 1]);
+                return -1;
+            }
+            *out_id = (int)v;
+            i++;
+            continue;
+        }
+        fprintf(stderr, "[FATAL] unknown option: %s\n", argv[i]);
+        return -1;
+    }
+    return 0;
+}
+
+static int active_ids_add(int *active_ids, int *active_id_count, int id) {
+    for (int i = 0; i < *active_id_count; i++) {
+        if (active_ids[i] == id)
+            return 0;
+    }
+    if (*active_id_count >= MAX_ACTIVE_PROFILE_IDS) {
+        fprintf(stderr, "[WARN] active profile set is full, ignoring id=%d\n", id);
+        return -1;
+    }
+    active_ids[(*active_id_count)++] = id;
+    return 0;
 }
 
 static int libbpf_print_silent(enum libbpf_print_level level,
@@ -73,6 +118,43 @@ static int runtime_start(struct runtime_state *rt, const struct app_config *cfg)
     return 0;
 }
 
+static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
+                                int active_id_count, int trigger_id) {
+    struct app_config merged_cfg;
+    if (build_merged_config(&merged_cfg, active_ids, active_id_count, NULL) != 0) {
+        fprintf(stderr, "[FATAL] failed to build config for ne_profiles.id=%d\n", trigger_id);
+        return -1;
+    }
+
+    main_diag_log_loaded_config(&merged_cfg, trigger_id);
+
+    if (!rt->has_thread) {
+        if (runtime_start(rt, &merged_cfg) != 0) {
+            fprintf(stderr, "[FATAL] failed to start forwarder\n");
+            return -1;
+        }
+        fprintf(stderr,
+                "[OK] loaded ne_profiles.id=%d (%d active profile(s)) — "
+                "confirm \"[RUNTIME] forwarder_init OK\" in log\n",
+                trigger_id, active_id_count);
+        return 0;
+    }
+
+    int next_slot = 1 - rt->active_slot;
+    rt->cfg_slots[next_slot] = merged_cfg;
+    if (forwarder_reload_config(&rt->fwd, &rt->cfg_slots[next_slot]) == 0) {
+        rt->active_slot = next_slot;
+        fprintf(stderr, "[OK] hot-reloaded %d active profile(s) (trigger id=%d)\n",
+                active_id_count, trigger_id);
+        return 0;
+    }
+
+    fprintf(stderr,
+            "[WARN] hot reload rejected for ne_profiles.id=%d; keeping current runtime\n",
+            trigger_id);
+    return -1;
+}
+
 int main(int argc, char **argv) {
     setbuf(stderr, NULL);
 
@@ -89,8 +171,8 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    if (argc > 1) {
-        fprintf(stderr, "[FATAL] unknown option (use pg_notify to load config)\n");
+    int startup_id = -1;
+    if (parse_startup_profile_id(argc, argv, &startup_id) != 0) {
         usage(argv[0]);
         return 1;
     }
@@ -107,8 +189,17 @@ int main(int argc, char **argv) {
 
     struct runtime_state rt;
     memset(&rt, 0, sizeof(rt));
-    int active_ids[32];
+    int active_ids[MAX_ACTIVE_PROFILE_IDS];
     int active_id_count = 0;
+
+    if (startup_id >= 0) {
+        fprintf(stderr, "[STARTUP] loading ne_profiles.id=%d from DB\n", startup_id);
+        if (active_ids_add(active_ids, &active_id_count, startup_id) != 0 ||
+            apply_active_configs(&rt, active_ids, active_id_count, startup_id) != 0) {
+            PQfinish(listen_conn);
+            return 1;
+        }
+    }
 
     for (;;) {
         int pq_fd = PQsocket(listen_conn);
@@ -129,49 +220,15 @@ int main(int argc, char **argv) {
         PGnotify *notify;
         while ((notify = PQnotifies(listen_conn)) != NULL) {
             int id = atoi(notify->extra);
-            int exists = 0;
-            for (int i = 0; i < active_id_count; i++) {
-                if (active_ids[i] == id) {
-                    exists = 1;
-                    break;
-                }
-            }
-            if (!exists) {
-                if (active_id_count >= (int)(sizeof(active_ids) / sizeof(active_ids[0]))) {
-                    fprintf(stderr, "[WARN] active config set is full, ignoring id=%d\n", id);
-                    PQfreemem(notify);
-                    continue;
-                }
-                active_ids[active_id_count++] = id;
+            if (id <= 0) {
+                fprintf(stderr, "[WARN] ignoring NOTIFY with invalid id payload: \"%s\"\n",
+                        notify->extra ? notify->extra : "");
+                PQfreemem(notify);
+                continue;
             }
 
-            struct app_config merged_cfg;
-            if (build_merged_config(&merged_cfg, active_ids, active_id_count, pg.values[4]) == 0) {
-                main_diag_log_loaded_config(&merged_cfg, id);
-                if (!rt.has_thread) {
-                    if (runtime_start(&rt, &merged_cfg) != 0) {
-                        fprintf(stderr, "[FATAL] failed to start merged runtime\n");
-                    } else {
-                        fprintf(stderr,
-                                "[OK] NOTIFY handled; forwarder thread started (%d active config(s)) — "
-                                "init finishes asynchronously; confirm \"[RUNTIME] forwarder_init OK\"\n",
-                                active_id_count);
-                    }
-                } else {
-                    int next_slot = 1 - rt.active_slot;
-                    rt.cfg_slots[next_slot] = merged_cfg;
-                    if (forwarder_reload_config(&rt.fwd, &rt.cfg_slots[next_slot]) == 0) {
-                        rt.active_slot = next_slot;
-                        fprintf(stderr, "[OK] Hot-reloaded merged runtime with %d active config(s)\n", active_id_count);
-                    } else {
-                        fprintf(stderr,
-                                "[WARN] hot reload rejected for safety; keep current runtime unchanged "
-                                "(prevents traffic interruption)\n");
-                    }
-                }
-            } else {
-                fprintf(stderr, "[FATAL] failed to build merged config set after notify id=%d\n", id);
-            }
+            (void)active_ids_add(active_ids, &active_id_count, id);
+            apply_active_configs(&rt, active_ids, active_id_count, id);
             PQfreemem(notify);
         }
 

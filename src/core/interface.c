@@ -1056,7 +1056,9 @@ int interface_send_to_local(struct xsk_interface *iface,
                             const struct local_config *local_cfg,
                             void *pkt_data, uint32_t pkt_len) {
     uint32_t idx;
+#if !NE_USE_ARP_MAC_FORWARD
     struct ether_header *eth;
+#endif
 
     if (iface->queue_count == 0)
         return -1;
@@ -1086,9 +1088,8 @@ int interface_send_to_local(struct xsk_interface *iface,
     void *tx_buf = (uint8_t *)queue->bufs + addr;
     memcpy(tx_buf, pkt_data, pkt_len);
 
-    eth = (struct ether_header *)tx_buf;
-
 #if !NE_USE_ARP_MAC_FORWARD
+    eth = (struct ether_header *)tx_buf;
     if (local_cfg->dst_mac[0] | local_cfg->dst_mac[1] | local_cfg->dst_mac[2] |
         local_cfg->dst_mac[3] | local_cfg->dst_mac[4] | local_cfg->dst_mac[5]) {
         memcpy(eth->ether_dhost, local_cfg->dst_mac, MAC_LEN);
@@ -1197,7 +1198,9 @@ int interface_send_to_local_batch(struct xsk_interface *iface,
                                   void *pkt_data, uint32_t pkt_len,
                                   int tx_queue) {
     uint32_t idx;
+#if !NE_USE_ARP_MAC_FORWARD
     struct ether_header *eth;
+#endif
 
     if (iface->queue_count == 0)
         return -1;
@@ -1242,8 +1245,8 @@ int interface_send_to_local_batch(struct xsk_interface *iface,
     void *tx_buf = (uint8_t *)queue->bufs + addr;
     memcpy(tx_buf, pkt_data, pkt_len);
 
-    eth = (struct ether_header *)tx_buf;
 #if !NE_USE_ARP_MAC_FORWARD
+    eth = (struct ether_header *)tx_buf;
     if (local_cfg->dst_mac[0] | local_cfg->dst_mac[1] | local_cfg->dst_mac[2] |
         local_cfg->dst_mac[3] | local_cfg->dst_mac[4] | local_cfg->dst_mac[5]) {
         memcpy(eth->ether_dhost, local_cfg->dst_mac, MAC_LEN);
@@ -1352,7 +1355,9 @@ int interface_send_batch_queue(struct xsk_interface *iface, int queue_idx,
 
     struct xsk_queue *queue = &iface->queues[queue_idx];
     uint32_t idx;
+#if !NE_USE_ARP_MAC_FORWARD
     struct ether_header *eth;
+#endif
     int ret = 0;
 
     pthread_mutex_lock(&queue->tx_lock);
@@ -1397,8 +1402,8 @@ int interface_send_batch_queue(struct xsk_interface *iface, int queue_idx,
         void *tx_buf = (uint8_t *)queue->bufs + addr;
         memcpy(tx_buf, pkt_data, pkt_len);
 
-        eth = (struct ether_header *)tx_buf;
 #if !NE_USE_ARP_MAC_FORWARD
+        eth = (struct ether_header *)tx_buf;
         int have_dst = (iface->dst_mac[0] | iface->dst_mac[1] | iface->dst_mac[2] |
                         iface->dst_mac[3] | iface->dst_mac[4] | iface->dst_mac[5]);
         int have_src = (iface->src_mac[0] | iface->src_mac[1] | iface->src_mac[2] |
@@ -1451,7 +1456,9 @@ int interface_send_to_local_batch_queue(struct xsk_interface *iface,
 
     struct xsk_queue *queue = &iface->queues[queue_idx];
     uint32_t idx;
+#if !NE_USE_ARP_MAC_FORWARD
     struct ether_header *eth;
+#endif
 
 #define LOCAL_TX_MAX_WAIT_LOOPS  10000
 
@@ -1494,16 +1501,16 @@ int interface_send_to_local_batch_queue(struct xsk_interface *iface,
         void *tx_buf = (uint8_t *)queue->bufs + addr;
         memcpy(tx_buf, pkt_data, pkt_len);
 
-        eth = (struct ether_header *)tx_buf;
 #if !NE_USE_ARP_MAC_FORWARD
-    if (local_cfg->dst_mac[0] | local_cfg->dst_mac[1] | local_cfg->dst_mac[2] |
-        local_cfg->dst_mac[3] | local_cfg->dst_mac[4] | local_cfg->dst_mac[5]) {
-        memcpy(eth->ether_dhost, local_cfg->dst_mac, MAC_LEN);
-    }
-    if (local_cfg->src_mac[0] | local_cfg->src_mac[1] | local_cfg->src_mac[2] |
-        local_cfg->src_mac[3] | local_cfg->src_mac[4] | local_cfg->src_mac[5]) {
-        memcpy(eth->ether_shost, local_cfg->src_mac, MAC_LEN);
-    }
+        eth = (struct ether_header *)tx_buf;
+        if (local_cfg->dst_mac[0] | local_cfg->dst_mac[1] | local_cfg->dst_mac[2] |
+            local_cfg->dst_mac[3] | local_cfg->dst_mac[4] | local_cfg->dst_mac[5]) {
+            memcpy(eth->ether_dhost, local_cfg->dst_mac, MAC_LEN);
+        }
+        if (local_cfg->src_mac[0] | local_cfg->src_mac[1] | local_cfg->src_mac[2] |
+            local_cfg->src_mac[3] | local_cfg->src_mac[4] | local_cfg->src_mac[5]) {
+            memcpy(eth->ether_shost, local_cfg->src_mac, MAC_LEN);
+        }
 #endif
 
         xsk_ring_prod__tx_desc(&queue->tx, idx)->addr = addr;

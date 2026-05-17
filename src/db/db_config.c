@@ -266,10 +266,11 @@ static void ne_fill_policy_key(const char *enc_key, int enc_null, int key_len_by
 }
 
 static void ne_cidr_buf_with_invert(char *buf, size_t bufsz, const char *tok, int invert_db) {
+    int max_body = (int)((bufsz > 2) ? bufsz - 2 : 0);
     if (invert_db && tok[0] != '!')
-        snprintf(buf, bufsz, "!%s", tok);
+        snprintf(buf, bufsz, "!%.*s", max_body, tok);
     else
-        snprintf(buf, bufsz, "%s", tok);
+        snprintf(buf, bufsz, "%.*s", (int)(bufsz - 1), tok);
 }
 
 static int find_local_index_by_ifname(const struct app_config *cfg, const char *ifname) {

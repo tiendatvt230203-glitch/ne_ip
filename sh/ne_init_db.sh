@@ -1,4 +1,37 @@
 #!/usr/bin/env bash
-# Apply schema.sql (ne_* tables) to POSTGRES_DB — same as xdp_init_db.sh
+# Apply schema.sql (ne_* tables) to POSTGRES_DB from .db.env or /opt/db.env
 set -euo pipefail
-exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/xdp_init_db.sh" "$@"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=db_env.sh
+source "${SCRIPT_DIR}/db_env.sh"
+network_encryptor_load_db_env
+
+SCHEMA_FILE="${NETWORK_ENCRYPTOR_ROOT}/schema.sql"
+if [ ! -f "${SCHEMA_FILE}" ]; then
+  echo "[FATAL] schema not found: ${SCHEMA_FILE}" >&2
+  exit 1
+fi
+
+echo "=== ne_init_db ==="
+echo "postgres://${POSTGRES_USER}@${POSTGRES_SERVER}:${POSTGRES_PORT}/${POSTGRES_DB}"
+echo
+
+ne_psql -c "SELECT version();" >/dev/null
+echo "[OK] PostgreSQL connection"
+
+ne_psql_file "${SCHEMA_FILE}"
+echo "[OK] schema.sql applied"
+
+n=$(ne_psql -t -A -c "
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN ('ne_profiles','ne_policies','ne_lan','ne_wan');")
+if [ "${n:-0}" != "4" ]; then
+  echo "[FATAL] expected 4 ne_* tables, found ${n:-?}" >&2
+  exit 1
+fi
+echo "[OK] ne_profiles, ne_policies, ne_lan, ne_wan"
+
+echo
+echo "Next: sh/ne_load_profile.sh <ne_profiles.id> [seed.sql]"
