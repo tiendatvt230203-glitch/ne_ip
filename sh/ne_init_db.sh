@@ -11,8 +11,14 @@ if [ ! -f "${SCHEMA_FILE}" ]; then
   exit 1
 fi
 
+if grep -qiE '(^|[[:space:];])(DROP[[:space:]]+(ROLE|USER)|CREATE[[:space:]]+(ROLE|USER)|DROP[[:space:]]+DATABASE)\b' "${SCHEMA_FILE}"; then
+  echo "[FATAL] ${SCHEMA_FILE} must not drop/create users, roles, or databases" >&2
+  exit 1
+fi
+
 echo "=== ne_init_db ==="
 echo "postgres://${POSTGRES_USER}@${POSTGRES_SERVER}:${POSTGRES_PORT}/${POSTGRES_DB}"
+echo "scope: DROP/CREATE ne_* tables and enums only (no PostgreSQL users)"
 echo
 
 ne_psql -c "SELECT version();" >/dev/null

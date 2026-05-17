@@ -1,3 +1,5 @@
+NE_ENV_FILE="/opt/SEP/be/.env"
+
 _sh_db_env_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export NETWORK_ENCRYPTOR_ROOT="$(cd "${_sh_db_env_dir}/.." && pwd)"
 
@@ -16,33 +18,19 @@ network_encryptor_read_env_kv() {
   printf '%s' "$raw"
 }
 
-network_encryptor_load_db_env_from_file() {
-  local file="$1"
-  local v
-  v=$(network_encryptor_read_env_kv "$file" POSTGRES_SERVER) && export POSTGRES_SERVER="$v"
-  v=$(network_encryptor_read_env_kv "$file" POSTGRES_PORT) && export POSTGRES_PORT="$v"
-  v=$(network_encryptor_read_env_kv "$file" POSTGRES_USER) && export POSTGRES_USER="$v"
-  v=$(network_encryptor_read_env_kv "$file" POSTGRES_DB) && export POSTGRES_DB="$v"
-  v=$(network_encryptor_read_env_kv "$file" POSTGRES_PASSWORD) && export POSTGRES_PASSWORD="$v"
-}
-
 network_encryptor_load_db_env() {
-  local env_file=""
-  if [ -n "${DB_ENV_FILE:-}" ] && [ -f "${DB_ENV_FILE}" ]; then
-    env_file="${DB_ENV_FILE}"
-  elif [ -f "/opt/SEP/be/.env" ]; then
-    env_file="/opt/SEP/be/.env"
-  elif [ -f "${NETWORK_ENCRYPTOR_ROOT}/.db.env" ]; then
-    env_file="${NETWORK_ENCRYPTOR_ROOT}/.db.env"
-  elif [ -f "/opt/db.env" ]; then
-    env_file="/opt/db.env"
-  else
-    echo "[FATAL] DB env not found. Use: DB_ENV_FILE=path or /opt/SEP/be/.env" >&2
+  if [ ! -f "${NE_ENV_FILE}" ]; then
+    echo "[FATAL] DB env not found: ${NE_ENV_FILE}" >&2
     return 1
   fi
 
-  echo "[ENV] loading POSTGRES_* from ${env_file}"
-  network_encryptor_load_db_env_from_file "${env_file}"
+  echo "[ENV] loading POSTGRES_* from ${NE_ENV_FILE}"
+  local v
+  v=$(network_encryptor_read_env_kv "${NE_ENV_FILE}" POSTGRES_SERVER) && export POSTGRES_SERVER="$v"
+  v=$(network_encryptor_read_env_kv "${NE_ENV_FILE}" POSTGRES_PORT) && export POSTGRES_PORT="$v"
+  v=$(network_encryptor_read_env_kv "${NE_ENV_FILE}" POSTGRES_USER) && export POSTGRES_USER="$v"
+  v=$(network_encryptor_read_env_kv "${NE_ENV_FILE}" POSTGRES_DB) && export POSTGRES_DB="$v"
+  v=$(network_encryptor_read_env_kv "${NE_ENV_FILE}" POSTGRES_PASSWORD) && export POSTGRES_PASSWORD="$v"
 
   : "${POSTGRES_SERVER:?POSTGRES_SERVER is required}"
   : "${POSTGRES_PORT:?POSTGRES_PORT is required}"

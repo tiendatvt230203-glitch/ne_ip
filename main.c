@@ -153,14 +153,14 @@ static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
 int main(int argc, char **argv) {
     setbuf(stderr, NULL);
 
-    if (load_env_default() != 0) {
-        fprintf(stderr, "[FATAL] DB env file not found (set DB_ENV_FILE or use " NE_DEFAULT_ENV_FILE ")\n");
+    if (load_ne_env() != 0) {
+        fprintf(stderr, "[FATAL] DB env not loaded from " NE_ENV_FILE "\n");
         return 1;
     }
     struct ne_postgres_conn pg;
     if (ne_postgres_conn_fill(&pg) != 0) {
         fprintf(stderr,
-                "[FATAL] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in " NE_DEFAULT_ENV_FILE "\n");
+                "[FATAL] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in " NE_ENV_FILE "\n");
         return 1;
     }
 

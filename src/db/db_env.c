@@ -43,15 +43,11 @@ static void ne_sync_pgpassword(void) {
         setenv("PGPASSWORD", pass, 1);
 }
 
-static int ne_env_file_readable(const char *path) {
-    return path && path[0] && access(path, R_OK) == 0;
-}
-
-void load_env_from_file(const char *path) {
+static int ne_load_env_file(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
-        fprintf(stderr, "[ENV] Could not open env file: %s\n", path);
-        return;
+        fprintf(stderr, "[ENV] Could not open: %s\n", path);
+        return -1;
     }
 
     fprintf(stderr, "[ENV] loading POSTGRES_* from %s\n", path);
@@ -94,32 +90,15 @@ void load_env_from_file(const char *path) {
 
     fclose(f);
     ne_sync_pgpassword();
+    return 0;
 }
 
-int load_env_default(void) {
-    const char *override = getenv("DB_ENV_FILE");
-    static const char *fallbacks[] = {
-        NE_DEFAULT_ENV_FILE,
-        "/opt/db.env",
-        NULL,
-    };
-
-    if (ne_env_file_readable(override)) {
-        load_env_from_file(override);
-        return 0;
+int load_ne_env(void) {
+    if (access(NE_ENV_FILE, R_OK) != 0) {
+        fprintf(stderr, "[ENV] Missing or unreadable: " NE_ENV_FILE "\n");
+        return -1;
     }
-
-    for (int i = 0; fallbacks[i]; i++) {
-        if (ne_env_file_readable(fallbacks[i])) {
-            load_env_from_file(fallbacks[i]);
-            return 0;
-        }
-    }
-
-    fprintf(stderr,
-            "[ENV] No env file found (tried DB_ENV_FILE, %s, /opt/db.env)\n",
-            NE_DEFAULT_ENV_FILE);
-    return -1;
+    return ne_load_env_file(NE_ENV_FILE);
 }
 
 int ne_postgres_conn_fill(struct ne_postgres_conn *out) {
@@ -135,8 +114,7 @@ int ne_postgres_conn_fill(struct ne_postgres_conn *out) {
     if (!host || !host[0] || !port || !port[0] || !user || !user[0] ||
         !dbname || !dbname[0] || !pass || !pass[0]) {
         fprintf(stderr,
-                "[DB] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD "
-                "(expected in " NE_DEFAULT_ENV_FILE ")\n");
+                "[DB] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in " NE_ENV_FILE "\n");
         return -1;
     }
 
