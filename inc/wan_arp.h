@@ -54,6 +54,9 @@ void wan_log_peer_mac(struct arp_cache *wan_cache,
                        const struct wan_config *wan_cfg);
 
 void local_log_arp_ready(const struct arp_cache *c);
+void local_log_peer_mac(struct arp_cache *local_cache,
+                        const char *ifname,
+                        uint32_t peer_ip);
 
 #endif
 

@@ -1012,7 +1012,9 @@ void interface_recv_release(struct xsk_interface *iface,
 int interface_send(struct xsk_interface *iface,
                    void *pkt_data, uint32_t pkt_len) {
     uint32_t idx;
+#if !NE_USE_ARP_MAC_FORWARD
     struct ether_header *eth;
+#endif
 
     uint32_t comp_idx;
     int completed = xsk_ring_cons__peek(&iface->comp, iface->batch_size, &comp_idx);
@@ -1036,9 +1038,17 @@ int interface_send(struct xsk_interface *iface,
     void *tx_buf = (uint8_t *)iface->bufs + addr;
     memcpy(tx_buf, pkt_data, pkt_len);
 
+#if !NE_USE_ARP_MAC_FORWARD
     eth = (struct ether_header *)tx_buf;
-    memcpy(eth->ether_dhost, iface->dst_mac, MAC_LEN);
-    memcpy(eth->ether_shost, iface->src_mac, MAC_LEN);
+    if (iface->dst_mac[0] | iface->dst_mac[1] | iface->dst_mac[2] |
+        iface->dst_mac[3] | iface->dst_mac[4] | iface->dst_mac[5]) {
+        memcpy(eth->ether_dhost, iface->dst_mac, MAC_LEN);
+    }
+    if (iface->src_mac[0] | iface->src_mac[1] | iface->src_mac[2] |
+        iface->src_mac[3] | iface->src_mac[4] | iface->src_mac[5]) {
+        memcpy(eth->ether_shost, iface->src_mac, MAC_LEN);
+    }
+#endif
 
     xsk_ring_prod__tx_desc(&iface->tx, idx)->addr = addr;
     xsk_ring_prod__tx_desc(&iface->tx, idx)->len = pkt_len;
@@ -1119,7 +1129,9 @@ void interface_print_stats(struct xsk_interface *iface) {
 int interface_send_batch(struct xsk_interface *iface,
                          void *pkt_data, uint32_t pkt_len) {
     uint32_t idx;
+#if !NE_USE_ARP_MAC_FORWARD
     struct ether_header *eth;
+#endif
     int ret = 0;
 
     pthread_mutex_lock(&iface->tx_lock);
@@ -1162,9 +1174,17 @@ int interface_send_batch(struct xsk_interface *iface,
     void *tx_buf = (uint8_t *)iface->bufs + addr;
     memcpy(tx_buf, pkt_data, pkt_len);
 
+#if !NE_USE_ARP_MAC_FORWARD
     eth = (struct ether_header *)tx_buf;
-    memcpy(eth->ether_dhost, iface->dst_mac, MAC_LEN);
-    memcpy(eth->ether_shost, iface->src_mac, MAC_LEN);
+    if (iface->dst_mac[0] | iface->dst_mac[1] | iface->dst_mac[2] |
+        iface->dst_mac[3] | iface->dst_mac[4] | iface->dst_mac[5]) {
+        memcpy(eth->ether_dhost, iface->dst_mac, MAC_LEN);
+    }
+    if (iface->src_mac[0] | iface->src_mac[1] | iface->src_mac[2] |
+        iface->src_mac[3] | iface->src_mac[4] | iface->src_mac[5]) {
+        memcpy(eth->ether_shost, iface->src_mac, MAC_LEN);
+    }
+#endif
 
     xsk_ring_prod__tx_desc(&iface->tx, idx)->addr = addr;
     xsk_ring_prod__tx_desc(&iface->tx, idx)->len = pkt_len;

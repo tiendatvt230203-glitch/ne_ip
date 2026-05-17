@@ -67,9 +67,6 @@ static struct crypto_policy g_prev_policies[MAX_CRYPTO_POLICIES];
 static int g_prev_policy_count = 0;
 static uint64_t g_prev_policy_grace_until_ms = 0;
 #define POLICY_RELOAD_GRACE_MS 60000ULL
-static uint64_t g_profile_hits[MAX_PROFILES];
-static uint64_t g_profile_miss_hits;
-static uint64_t g_profile_log_seq;
 static int g_tcp_diag_enabled = 0;
 
 
@@ -648,9 +645,9 @@ static int select_wan_idx_for_packet(struct forwarder *fwd,
                     int wi = p->wan_indices[i];
                     if (wi < 0 || wi >= fwd->cfg->wan_count)
                         continue;
-                    allowed[n] = wi;
                     if (any_weight && p->wan_bandwidth_weight[i] <= 0)
                         continue;
+                    allowed[n] = wi;
                     weights[n] = p->wan_bandwidth_weight[i];
                     n++;
                 }
@@ -751,6 +748,44 @@ static void log_wan_peer_mac(struct forwarder *fwd, int wan_idx) {
     if (!fwd || wan_idx < 0 || wan_idx >= fwd->wan_count)
         return;
     wan_log_peer_mac(&g_wan_arp[wan_idx], fwd->wans[wan_idx].ifname, &fwd->cfg->wans[wan_idx]);
+}
+
+static void local_arp_resolve_policy_hosts(struct app_config *cfg, int local_idx) {
+    if (!cfg || local_idx < 0 || local_idx >= cfg->local_count)
+        return;
+
+    const char *ifname = cfg->locals[local_idx].ifname;
+    uint32_t seen[32];
+    int n_seen = 0;
+
+    for (int pi = 0; pi < cfg->policy_count; pi++) {
+        const struct crypto_policy *p = &cfg->policies[pi];
+        uint32_t hosts[2];
+        int nhosts = 0;
+
+        if (!p->src_any && p->src_mask == htonl(0xffffffffu))
+            hosts[nhosts++] = p->src_net;
+        if (!p->dst_any && p->dst_mask == htonl(0xffffffffu))
+            hosts[nhosts++] = p->dst_net;
+
+        for (int h = 0; h < nhosts; h++) {
+            uint32_t ip = hosts[h];
+            if (ip == 0)
+                continue;
+            int dup = 0;
+            for (int s = 0; s < n_seen; s++) {
+                if (seen[s] == ip) {
+                    dup = 1;
+                    break;
+                }
+            }
+            if (dup)
+                continue;
+            if (n_seen < 32)
+                seen[n_seen++] = ip;
+            local_log_peer_mac(&g_arp[local_idx], ifname, ip);
+        }
+    }
 }
 
 struct packet_job {
@@ -993,6 +1028,25 @@ static int parse_flow(void *pkt_data, uint32_t pkt_len,
     return 0;
 }
 
+#define NE_WAN_NONIP_DIST_PROTO 253
+
+static uint32_t pkt_l2_sig(const uint8_t *p, uint32_t len) {
+    uint32_t h = 2166136261u ^ len;
+    uint32_t cap = len < 192u ? len : 192u;
+    for (uint32_t i = 0; i < cap; i++)
+        h = h * 16777619u ^ p[i];
+    return h;
+}
+
+static int select_wan_idx_nonip_flow(struct forwarder *fwd, int local_idx,
+                                     const void *pkt, uint32_t pkt_len) {
+    uint32_t h = pkt ? pkt_l2_sig((const uint8_t *)pkt, pkt_len) : 0;
+    uint16_t sp = (uint16_t)h;
+    uint16_t dp = (uint16_t)(h >> 16);
+    return select_wan_idx_for_packet(fwd, local_idx, htonl(0xc0000201u), htonl(0xc0000202u),
+                                     sp, dp, NE_WAN_NONIP_DIST_PROTO, pkt_len);
+}
+
 static inline uint32_t flow_hash_local_tq(uint32_t src_ip, uint32_t dst_ip,
                                           uint16_t src_port, uint16_t dst_port,
                                           uint8_t protocol) {
@@ -1063,7 +1117,7 @@ static void *local_queue_thread_no_crypto(void *arg) {
                                                     src_ip, dst_ip, src_port, dst_port,
                                                     protocol, pkt_lens[i]);
             } else {
-                wan_idx = 0;
+                wan_idx = select_wan_idx_nonip_flow(fwd, local_idx, pkt_ptrs[i], pkt_lens[i]);
             }
 
             if (wan_idx < 0 || wan_idx >= fwd->wan_count)
@@ -1230,7 +1284,7 @@ static void *local_queue_thread_l2(void *arg) {
                                                     src_ip, dst_ip, src_port, dst_port,
                                                     protocol, pkt_lens[i]);
             } else {
-                wan_idx = 0;
+                wan_idx = select_wan_idx_nonip_flow(fwd, local_idx, pkt_ptrs[i], pkt_lens[i]);
             }
 
             if (wan_idx < 0 || wan_idx >= fwd->wan_count)
@@ -1954,39 +2008,17 @@ static void *worker_thread(void *arg) {
         int tcp_flags_ok = 0;
         if (flow_ok && protocol == IPPROTO_TCP)
             tcp_flags_ok = (tcp_ipv4_tcp_flags(job.pkt_ptr, job.pkt_len, &tcp_flags) == 0);
-        int profile_idx = -1;
-        if (fwd->cfg && job.local_idx >= 0 && job.local_idx < fwd->cfg->local_count) {
-            profile_idx = config_select_profile_for_local(fwd->cfg, job.local_idx);
-            if (profile_idx >= 0 && profile_idx < MAX_PROFILES)
-                __sync_fetch_and_add(&g_profile_hits[profile_idx], 1);
-            else
-                __sync_fetch_and_add(&g_profile_miss_hits, 1);
-        }
-
         int wan_idx;
         if (flow_ok) {
             wan_idx = select_wan_idx_for_packet(fwd, job.local_idx,
                                                 src_ip, dst_ip, src_port, dst_port,
                                                 protocol, job.pkt_len);
         } else {
-            wan_idx = 0;
+            wan_idx = select_wan_idx_nonip_flow(fwd, job.local_idx, job.pkt_ptr, job.pkt_len);
         }
 
         if (wan_idx < 0 || wan_idx >= fwd->wan_count) {
             wan_idx = 0;
-        }
-
-        uint64_t seq = __sync_add_and_fetch(&g_profile_log_seq, 1);
-        if ((seq % 20000ULL) == 0 && fwd->cfg) {
-            fprintf(stderr, "[PROFILE HIT] total=%llu miss=%llu",
-                    (unsigned long long)seq,
-                    (unsigned long long)g_profile_miss_hits);
-            for (int pi = 0; pi < fwd->cfg->profile_count; pi++) {
-                fprintf(stderr, " p%d(%s)=%llu",
-                        pi, fwd->cfg->profiles[pi].name,
-                        (unsigned long long)g_profile_hits[pi]);
-            }
-            fprintf(stderr, " last_sel=%d last_wan=%d\n", profile_idx, wan_idx);
         }
 
         struct xsk_interface *wan = &fwd->wans[wan_idx];
@@ -2335,6 +2367,17 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
             pthread_detach(tid);
             g_arp_inited = 1;
             local_log_arp_ready(&g_arp[i]);
+            if (local_config_fill_ipv4_from_iface(&cfg->locals[i]) == 0) {
+                struct in_addr ga = { .s_addr = cfg->locals[i].ip };
+                char ipstr[INET_ADDRSTRLEN];
+                if (inet_ntop(AF_INET, &ga, ipstr, sizeof(ipstr)))
+                    fprintf(stderr,
+                            "[LAN] %s gateway %s — hosts in same subnet use ARP via this IP\n",
+                            cfg->locals[i].ifname, ipstr);
+            }
+            local_arp_resolve_policy_hosts(cfg, i);
+            memcpy(fwd->locals[i].src_mac, g_arp[i].if_mac, MAC_LEN);
+            memcpy(cfg->locals[i].src_mac, g_arp[i].if_mac, MAC_LEN);
         } else {
             fprintf(stderr, "[LAN ARP] WARN: cannot init on %s\n",
                     fwd->locals[i].ifname);
@@ -2371,6 +2414,15 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
             pthread_detach(tid);
             g_arp_inited = 1;
             log_wan_peer_mac(fwd, i);
+            memcpy(fwd->wans[i].src_mac, g_wan_arp[i].if_mac, MAC_LEN);
+            memcpy(cfg->wans[i].src_mac, g_wan_arp[i].if_mac, MAC_LEN);
+            if (cfg->wans[i].dst_ip != 0) {
+                uint8_t peer_mac[MAC_LEN];
+                if (arp_cache_lookup(&g_wan_arp[i], cfg->wans[i].dst_ip, peer_mac)) {
+                    memcpy(fwd->wans[i].dst_mac, peer_mac, MAC_LEN);
+                    memcpy(cfg->wans[i].dst_mac, peer_mac, MAC_LEN);
+                }
+            }
         } else {
             fprintf(stderr, "[ARP] WARN: cannot init WAN ARP on %s\n", cfg->wans[i].ifname);
         }

@@ -292,6 +292,7 @@ int local_rewrite_dest_mac(struct arp_cache *local_cache,
         memcpy(pkt + 6, local_cache->if_mac, 6);
         return 0;
     }
+
     arp_send_request(local_cache, dest_ip);
     return -1;
 }
@@ -306,11 +307,58 @@ void local_log_arp_ready(const struct arp_cache *c) {
     if (!c)
         return;
 
+    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+    if (c->if_ip != 0)
+        format_ipv4_be(c->if_ip, local_ip, sizeof(local_ip));
+
     fprintf(stderr,
-            "[LAN ARP] if=%s mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+            "[LAN ARP] if=%s local_ip=%s local_mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
             c->ifname,
+            local_ip,
             c->if_mac[0], c->if_mac[1], c->if_mac[2],
             c->if_mac[3], c->if_mac[4], c->if_mac[5]);
+}
+
+static void log_peer_arp_resolved(struct arp_cache *c,
+                                  const char *tag,
+                                  const char *ifname,
+                                  uint32_t peer_ip) {
+    char peer_ipstr[INET_ADDRSTRLEN] = {0};
+    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
+    format_ipv4_be(peer_ip, peer_ipstr, sizeof(peer_ipstr));
+    if (c->if_ip != 0)
+        format_ipv4_be(c->if_ip, local_ip, sizeof(local_ip));
+
+    uint8_t mac[6];
+    for (int tries = 0; tries < 10; tries++) {
+        if (arp_cache_lookup(c, peer_ip, mac)) {
+            fprintf(stderr,
+                    "[%s] if=%s local_ip=%s peer_ip=%s dest_mac=%02x:%02x:%02x:%02x:%02x:%02x (peer resolved)\n",
+                    tag,
+                    ifname,
+                    local_ip,
+                    peer_ipstr,
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            return;
+        }
+        arp_send_request(c, peer_ip);
+        usleep(100000);
+    }
+    fprintf(stderr,
+            "[%s] if=%s local_ip=%s peer_ip=%s dest_mac=UNRESOLVED (check L2 / IP on %s)\n",
+            tag,
+            ifname,
+            local_ip,
+            peer_ipstr,
+            ifname);
+}
+
+void local_log_peer_mac(struct arp_cache *local_cache,
+                        const char *ifname,
+                        uint32_t peer_ip) {
+    if (!local_cache || !ifname || peer_ip == 0)
+        return;
+    log_peer_arp_resolved(local_cache, "LAN ARP", ifname, peer_ip);
 }
 
 void wan_log_peer_mac(struct arp_cache *wan_cache,
@@ -320,31 +368,6 @@ void wan_log_peer_mac(struct arp_cache *wan_cache,
         return;
     if (wan_cfg->dst_ip == 0)
         return;
-
-    char peer_ip[INET_ADDRSTRLEN] = {0};
-    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
-    format_ipv4_be(wan_cfg->dst_ip, peer_ip, sizeof(peer_ip));
-    if (wan_cache->if_ip != 0)
-        format_ipv4_be(wan_cache->if_ip, local_ip, sizeof(local_ip));
-
-    uint8_t mac[6];
-    for (int tries = 0; tries < 10; tries++) {
-        if (arp_cache_lookup(wan_cache, wan_cfg->dst_ip, mac)) {
-            fprintf(stderr,
-                    "[WAN ARP] if=%s local_ip=%s peer_ip=%s dest_mac=%02x:%02x:%02x:%02x:%02x:%02x (peer resolved)\n",
-                    ifname,
-                    local_ip,
-                    peer_ip,
-                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-            return;
-        }
-        arp_send_request(wan_cache, wan_cfg->dst_ip);
-        usleep(100000);
-    }
-    fprintf(stderr,
-            "[WAN ARP] if=%s local_ip=%s peer_ip=%s dest_mac=UNRESOLVED (check L2 reachability / dst_ip / firewall)\n",
-            ifname,
-            local_ip,
-            peer_ip);
+    log_peer_arp_resolved(wan_cache, "WAN ARP", ifname, wan_cfg->dst_ip);
 }
 

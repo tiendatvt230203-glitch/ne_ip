@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -17,7 +20,93 @@
 
 #define NOTIFY_CHANNEL "xdp_start"
 #define MAX_ACTIVE_PROFILE_IDS 32
-// 123
+
+static char g_ctrl_sock[108];
+
+static void ctrl_sock_path(void) {
+    snprintf(g_ctrl_sock, sizeof(g_ctrl_sock),
+             "/tmp/network-encryptor-%u.sock", (unsigned)getuid());
+}
+
+static int ctrl_parse_start(const char *line, int *id_out) {
+    while (line && (*line == ' ' || *line == '\t'))
+        line++;
+    int id = -1;
+    if (!line || (sscanf(line, "start %d", &id) != 1 && sscanf(line, "%d", &id) != 1))
+        return -1;
+    if (id <= 0)
+        return -1;
+    *id_out = id;
+    return 0;
+}
+
+static int ctrl_server_start(void) {
+    ctrl_sock_path();
+    unlink(g_ctrl_sock);
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_ctrl_sock);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+    chmod(g_ctrl_sock, 0600);
+    if (listen(fd, 4) != 0) {
+        close(fd);
+        unlink(g_ctrl_sock);
+        return -1;
+    }
+    return fd;
+}
+
+static int ctrl_server_poll(int listen_fd, int *profile_id_out) {
+    int cfd = accept(listen_fd, NULL, NULL);
+    if (cfd < 0)
+        return -1;
+    char buf[64];
+    ssize_t n = recv(cfd, buf, sizeof(buf) - 1, 0);
+    int id = -1;
+    if (n > 0 && ctrl_parse_start((buf[n] = '\0', buf), &id) == 0) {
+        *profile_id_out = id;
+        send(cfd, "OK\n", 3, 0);
+        close(cfd);
+        return 0;
+    }
+    send(cfd, "ERR\n", 4, 0);
+    close(cfd);
+    return -1;
+}
+
+static int ctrl_client_request_start(int profile_id) {
+    if (profile_id <= 0)
+        return -1;
+    ctrl_sock_path();
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_un addr = { .sun_family = AF_UNIX };
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", g_ctrl_sock);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+    char msg[32];
+    int mlen = snprintf(msg, sizeof(msg), "start %d\n", profile_id);
+    if (send(fd, msg, (size_t)mlen, 0) != mlen) {
+        close(fd);
+        return -1;
+    }
+    char resp[16];
+    ssize_t rn = recv(fd, resp, sizeof(resp) - 1, 0);
+    close(fd);
+    if (rn <= 0)
+        return -1;
+    resp[rn] = '\0';
+    return strncmp(resp, "OK", 2) == 0 ? 0 : -1;
+}
+
 struct runtime_state {
     pthread_t thread;
     int has_thread;
@@ -30,8 +119,8 @@ struct runtime_state {
 static void usage(const char *prog) {
     fprintf(stderr,
             "Usage:\n"
-            "  %s -id <ne_profiles.id>   load profile and run (XDP/forwarder)\n"
-            "  %s                       idle: listen only, traffic unchanged\n",
+            "  %s                       daemon: wait on this terminal (no XDP yet)\n"
+            "  %s -id <ne_profiles.id>   tell daemon to load+run (logs on daemon screen)\n",
             prog, prog);
 }
 
@@ -150,19 +239,22 @@ static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
     return -1;
 }
 
+static int daemon_handle_start(struct runtime_state *rt,
+                               int *active_ids, int *active_id_count,
+                               int profile_id, const char *via) {
+    fprintf(stderr, "[STARTUP] loading ne_profiles.id=%d from DB (%s)\n",
+            profile_id, via);
+
+    if (!rt->has_thread)
+        *active_id_count = 0;
+
+    if (active_ids_add(active_ids, active_id_count, profile_id) != 0)
+        return -1;
+    return apply_active_configs(rt, active_ids, *active_id_count, profile_id);
+}
+
 int main(int argc, char **argv) {
     setbuf(stderr, NULL);
-
-    if (load_ne_env() != 0) {
-        fprintf(stderr, "[FATAL] DB env not loaded from " NE_ENV_FILE "\n");
-        return 1;
-    }
-    struct ne_postgres_conn pg;
-    if (ne_postgres_conn_fill(&pg) != 0) {
-        fprintf(stderr,
-                "[FATAL] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in " NE_ENV_FILE "\n");
-        return 1;
-    }
 
     if (argc > 1 && (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
         usage(argv[0]);
@@ -172,6 +264,32 @@ int main(int argc, char **argv) {
     int startup_id = -1;
     if (parse_startup_profile_id(argc, argv, &startup_id) != 0) {
         usage(argv[0]);
+        return 1;
+    }
+
+    if (startup_id >= 0) {
+        if (ctrl_client_request_start(startup_id) == 0) {
+            fprintf(stderr,
+                    "[OK] ne_profiles.id=%d sent to daemon (logs on daemon terminal)\n",
+                    startup_id);
+            return 0;
+        }
+    }
+
+    if (load_ne_env() != 0) {
+        fprintf(stderr, "[FATAL] DB env not loaded from " NE_ENV_FILE "\n");
+        return 1;
+    }
+
+    if (startup_id >= 0) {
+        fprintf(stderr,
+                "[WARN] no daemon listening; starting in this process\n");
+    }
+
+    struct ne_postgres_conn pg;
+    if (ne_postgres_conn_fill(&pg) != 0) {
+        fprintf(stderr,
+                "[FATAL] Missing POSTGRES_SERVER/PORT/USER/DB/PASSWORD in " NE_ENV_FILE "\n");
         return 1;
     }
 
@@ -190,18 +308,24 @@ int main(int argc, char **argv) {
     int active_ids[MAX_ACTIVE_PROFILE_IDS];
     int active_id_count = 0;
 
-    if (startup_id >= 0) {
-        fprintf(stderr, "[STARTUP] loading ne_profiles.id=%d from DB\n", startup_id);
-        if (active_ids_add(active_ids, &active_id_count, startup_id) != 0 ||
-            apply_active_configs(&rt, active_ids, active_id_count, startup_id) != 0) {
+    int ctrl_fd = -1;
+    if (startup_id < 0) {
+        ctrl_fd = ctrl_server_start();
+        if (ctrl_fd < 0) {
+            fprintf(stderr, "[FATAL] control socket failed (is another daemon running?)\n");
             PQfinish(listen_conn);
             return 1;
         }
-    } else {
         fprintf(stderr,
-                "[WAIT] idle — no XDP/forwarder; traffic uses kernel default path.\n"
-                "[WAIT] start with: %s -id <ne_profiles.id>\n",
+                "[WAIT] idle — no config loaded, no XDP/forwarder (traffic unchanged).\n"
+                "[WAIT] on this terminal: run in another shell: %s -id <ne_profiles.id>\n",
                 argv[0]);
+    } else {
+        if (daemon_handle_start(&rt, active_ids, &active_id_count,
+                                startup_id, "foreground") != 0) {
+            PQfinish(listen_conn);
+            return 1;
+        }
     }
 
     for (;;) {
@@ -212,35 +336,50 @@ int main(int argc, char **argv) {
             usleep(200000);
             continue;
         }
+
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(pq_fd, &rfds);
+        int maxfd = pq_fd;
+        if (ctrl_fd >= 0) {
+            FD_SET(ctrl_fd, &rfds);
+            if (ctrl_fd > maxfd)
+                maxfd = ctrl_fd;
+        }
 
-        if (select(pq_fd + 1, &rfds, NULL, NULL, NULL) < 0)
+        if (select(maxfd + 1, &rfds, NULL, NULL, NULL) < 0)
             continue;
 
-        PQconsumeInput(listen_conn);
-        PGnotify *notify;
-        while ((notify = PQnotifies(listen_conn)) != NULL) {
-            int id = atoi(notify->extra);
-            if (id <= 0) {
-                fprintf(stderr, "[WARN] ignoring NOTIFY with invalid id payload: \"%s\"\n",
-                        notify->extra ? notify->extra : "");
-                PQfreemem(notify);
-                continue;
+        if (ctrl_fd >= 0 && FD_ISSET(ctrl_fd, &rfds)) {
+            int profile_id = -1;
+            if (ctrl_server_poll(ctrl_fd, &profile_id) == 0 && profile_id > 0) {
+                if (daemon_handle_start(&rt, active_ids, &active_id_count,
+                                        profile_id, "-id command") != 0) {
+                    fprintf(stderr,
+                            "[FATAL] failed to start for ne_profiles.id=%d\n", profile_id);
+                }
             }
+        }
 
-            if (!rt.has_thread) {
-                fprintf(stderr,
-                        "[WAIT] NOTIFY id=%d ignored (not running). Use: %s -id %d\n",
-                        id, argv[0], id);
+        if (FD_ISSET(pq_fd, &rfds)) {
+            PQconsumeInput(listen_conn);
+            PGnotify *notify;
+            while ((notify = PQnotifies(listen_conn)) != NULL) {
+                int id = atoi(notify->extra);
+                if (id <= 0) {
+                    fprintf(stderr,
+                            "[WARN] ignoring NOTIFY with invalid id payload: \"%s\"\n",
+                            notify->extra ? notify->extra : "");
+                } else if (!rt.has_thread) {
+                    fprintf(stderr,
+                            "[WAIT] NOTIFY id=%d ignored (idle). Run: %s -id %d\n",
+                            id, argv[0], id);
+                } else {
+                    (void)active_ids_add(active_ids, &active_id_count, id);
+                    apply_active_configs(&rt, active_ids, active_id_count, id);
+                }
                 PQfreemem(notify);
-                continue;
             }
-
-            (void)active_ids_add(active_ids, &active_id_count, id);
-            apply_active_configs(&rt, active_ids, active_id_count, id);
-            PQfreemem(notify);
         }
 
         if (PQstatus(listen_conn) != CONNECTION_OK) {
