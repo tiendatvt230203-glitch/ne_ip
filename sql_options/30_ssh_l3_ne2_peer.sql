@@ -22,8 +22,8 @@ INSERT INTO ne_policies (
 ),
 (
     23, 30, 2, 'L3', 'tcp',
-    ARRAY['192.168.180.2/32']::text[], FALSE,
-    ARRAY['192.168.9.2/32']::text[], FALSE,
+    ARRAY['192.168.180.0/24']::text[], FALSE,
+    ARRAY['192.168.9.0/24']::text[], FALSE,
     ARRAY['22']::text[], ARRAY['ANY']::text[],
     'aes-gcm-128', 12, '00112233445566778899aabbccddeeff', 'seed'
 ),

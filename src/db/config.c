@@ -24,30 +24,80 @@ int parse_mac(const char *str, uint8_t *mac) {
     return 0;
 }
 
+static uint32_t ipv4_prefix_to_mask_be(int prefix_len) {
+    if (prefix_len <= 0)
+        return 0;
+    if (prefix_len >= 32)
+        return htonl(0xFFFFFFFFu);
+    return htonl(0xFFFFFFFFu << (32 - prefix_len));
+}
+
+static int ipv4_mask_be_is_contiguous(uint32_t mask_be) {
+    uint32_t m = ntohl(mask_be);
+    if (m == 0)
+        return 1;
+    uint32_t inv = ~m;
+    return (inv & (inv + 1u)) == 0;
+}
+
+static int parse_ipv4_netmask_be(const char *s, uint32_t *mask_out) {
+    struct in_addr a;
+
+    if (!s || !mask_out || !s[0])
+        return -1;
+    if (inet_pton(AF_INET, s, &a) != 1)
+        return -1;
+    if (!ipv4_mask_be_is_contiguous(a.s_addr))
+        return -1;
+    *mask_out = a.s_addr;
+    return 0;
+}
+
 static int parse_ip_cidr(const char *str, uint32_t *ip, uint32_t *netmask, uint32_t *network) {
-    char ip_str[32];
-    int prefix_len = 32;
-    if (strchr(str, '/')) {
-        if (sscanf(str, "%31[^/]/%d", ip_str, &prefix_len) != 2)
-            return -1;
-    } else {
-        if (sscanf(str, "%31s", ip_str) != 1)
+    char buf[128];
+    const char *ip_part;
+    const char *suffix = NULL;
+
+    if (!str || !ip || !netmask)
+        return -1;
+
+    strncpy(buf, str, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *slash = strchr(buf, '/');
+    if (slash) {
+        *slash = '\0';
+        suffix = slash + 1;
+        while (*suffix == ' ' || *suffix == '\t')
+            suffix++;
+        if (!suffix[0])
             return -1;
     }
 
-    if (prefix_len < 0 || prefix_len > 32)
-        return -1;
+    ip_part = buf;
+    while (*ip_part == ' ' || *ip_part == '\t')
+        ip_part++;
 
     struct in_addr addr;
-    if (inet_pton(AF_INET, ip_str, &addr) != 1)
+    if (inet_pton(AF_INET, ip_part, &addr) != 1)
         return -1;
 
     *ip = addr.s_addr;
 
-    if (prefix_len == 0)
-        *netmask = 0;
-    else
-        *netmask = htonl(0xFFFFFFFF << (32 - prefix_len));
+    if (suffix) {
+        if (strchr(suffix, '.')) {
+            if (parse_ipv4_netmask_be(suffix, netmask) != 0)
+                return -1;
+        } else {
+            char *end = NULL;
+            long plen = strtol(suffix, &end, 10);
+            if (!end || *end != '\0' || plen < 0 || plen > 32)
+                return -1;
+            *netmask = ipv4_prefix_to_mask_be((int)plen);
+        }
+    } else {
+        *netmask = ipv4_prefix_to_mask_be(32);
+    }
 
     if (network)
         *network = *ip & *netmask;
@@ -313,9 +363,10 @@ int config_select_wan_for_profile(struct app_config *cfg, int profile_idx,
     return wan_idx;
 }
 
-static int crypto_policy_match_flow(const struct crypto_policy *cp,
-                                    uint32_t src_ip, uint32_t dst_ip,
-                                    uint16_t src_port, uint16_t dst_port) {
+static int crypto_policy_match_packet(const struct crypto_policy *cp,
+                                      uint32_t src_ip, uint32_t dst_ip,
+                                      uint16_t src_port, uint16_t dst_port,
+                                      uint8_t protocol) {
     if (!cidr_match_with_negate(cp->src_any, cp->src_negate, src_ip, cp->src_net, cp->src_mask))
         return 0;
     if (!cidr_match_with_negate(cp->dst_any, cp->dst_negate, dst_ip, cp->dst_net, cp->dst_mask))
@@ -331,6 +382,10 @@ static int crypto_policy_match_flow(const struct crypto_policy *cp,
             return 0;
     }
 #endif
+
+    if (cp->protocol != POLICY_PROTO_ANY && cp->protocol != protocol)
+        return 0;
+
     return 1;
 }
 
@@ -354,15 +409,13 @@ const struct crypto_policy *config_select_crypto_policy(struct app_config *cfg, 
             if (pass == 0) {
                 if (cp->protocol == POLICY_PROTO_ANY)
                     continue;
-                if (cp->protocol != protocol)
-                    continue;
             } else {
                 if (cp->protocol != POLICY_PROTO_ANY)
                     continue;
             }
-            int matched = crypto_policy_match_flow(cp, src_ip, dst_ip, src_port, dst_port);
+            int matched = crypto_policy_match_packet(cp, src_ip, dst_ip, src_port, dst_port, protocol);
             if (!matched)
-                matched = crypto_policy_match_flow(cp, dst_ip, src_ip, dst_port, src_port);
+                matched = crypto_policy_match_packet(cp, dst_ip, src_ip, dst_port, src_port, protocol);
             if (matched)
                 return cp;
         }

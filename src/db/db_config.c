@@ -187,7 +187,7 @@ static void trim_spaces_inplace(char *s) {
 }
 
 #define MAX_CIDR_LIST_ITEMS 32
-#define MAX_CIDR_ITEM_LEN 64
+#define MAX_CIDR_ITEM_LEN 96
 
 static int split_cidr_list(const char *input, char out[][MAX_CIDR_ITEM_LEN], int max_out) {
     if (!input || !out || max_out <= 0)
