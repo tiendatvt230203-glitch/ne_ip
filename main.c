@@ -363,6 +363,9 @@ int main(int argc, char **argv) {
     PGconn *listen_conn = PQconnectdbParams(pg.keywords, pg.values, 0);
     if (PQstatus(listen_conn) != CONNECTION_OK) {
         fprintf(stderr, "[FATAL] DB connection failed: %s", PQerrorMessage(listen_conn));
+        fprintf(stderr,
+                "[DB] tried host=%s port=%s dbname=%s user=%s (from " NE_ENV_FILE ")\n",
+                pg.values[0], pg.values[1], pg.values[2], pg.values[3]);
         PQfinish(listen_conn);
         return 1;
     }

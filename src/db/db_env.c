@@ -9,6 +9,7 @@
 static int ne_env_key_allowed(const char *key) {
     static const char *allowed[] = {
         "POSTGRES_SERVER",
+        "POSTGRES_HOST",
         "POSTGRES_PORT",
         "POSTGRES_USER",
         "POSTGRES_DB",
@@ -105,7 +106,11 @@ int ne_postgres_conn_fill(struct ne_postgres_conn *out) {
     if (!out)
         return -1;
 
+    memset(out, 0, sizeof(*out));
+
     const char *host = getenv("POSTGRES_SERVER");
+    if (!host || !host[0])
+        host = getenv("POSTGRES_HOST");
     const char *port = getenv("POSTGRES_PORT");
     const char *user = getenv("POSTGRES_USER");
     const char *dbname = getenv("POSTGRES_DB");
@@ -123,6 +128,7 @@ int ne_postgres_conn_fill(struct ne_postgres_conn *out) {
     };
     for (int i = 0; kw[i]; i++)
         out->keywords[i] = kw[i];
+    out->keywords[6] = NULL;
     out->values[0] = host;
     out->values[1] = port;
     out->values[2] = dbname;
