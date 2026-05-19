@@ -14,7 +14,8 @@
 #define FRAG_MTU            1500
 
 
-#define FRAG_TABLE_SIZE     4096
+/* Heap-sized tables live in forwarder.c; keep moderate to limit .bss (~2.6 MiB for 3 tables). */
+#define FRAG_TABLE_SIZE     512
 #define FRAG_TIMEOUT_NS     (200ULL * 1000000ULL)
 
 struct frag_entry {

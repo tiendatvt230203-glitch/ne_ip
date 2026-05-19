@@ -28,6 +28,16 @@ static void on_stop_signal(int sig) {
     forwarder_stop();
 }
 
+static int parse_notify_profile_id(const char *payload) {
+    if (!payload || !*payload)
+        return -1;
+    char *end = NULL;
+    long v = strtol(payload, &end, 10);
+    if (!end || *end != '\0' || v <= 0 || v > INT_MAX)
+        return -1;
+    return (int)v;
+}
+
 struct runtime_state {
     pthread_t thread;
     int has_thread;
@@ -192,9 +202,15 @@ static int runtime_start(struct runtime_state *rt, const struct app_config *cfg)
 static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
                                 int active_id_count, int trigger_id,
                                 int after_delete) {
-    struct app_config merged_cfg;
-    if (build_merged_config(&merged_cfg, active_ids, active_id_count, NULL) != 0)
+    struct app_config *merged_cfg = calloc(1, sizeof(*merged_cfg));
+    if (!merged_cfg) {
+        fprintf(stderr, "[FATAL] out of memory building merged config\n");
         return -1;
+    }
+    if (build_merged_config(merged_cfg, active_ids, active_id_count, NULL) != 0) {
+        free(merged_cfg);
+        return -1;
+    }
 
     if (after_delete)
         fprintf(stderr, "[LOAD] active after delete:");
@@ -203,16 +219,17 @@ static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
     for (int i = 0; i < active_id_count; i++)
         fprintf(stderr, " %d", active_ids[i]);
     fprintf(stderr, "\n");
-    main_diag_log_loaded_config(&merged_cfg, trigger_id);
+    main_diag_log_loaded_config(merged_cfg, trigger_id);
 
     if (!rt->has_thread) {
-        if (runtime_start(rt, &merged_cfg) != 0)
-            return -1;
-        return 0;
+        int rc = runtime_start(rt, merged_cfg);
+        free(merged_cfg);
+        return rc != 0 ? -1 : 0;
     }
 
     int next_slot = 1 - rt->active_slot;
-    rt->cfg_slots[next_slot] = merged_cfg;
+    rt->cfg_slots[next_slot] = *merged_cfg;
+    free(merged_cfg);
     if (forwarder_reload_config(&rt->fwd, &rt->cfg_slots[next_slot]) == 0) {
         rt->active_slot = next_slot;
         return 0;
@@ -353,8 +370,14 @@ int main(int argc, char **argv) {
 
     fprintf(stderr, "[DAEMON] listening %s — use %s -id <id>\n", NOTIFY_CHANNEL, argv[0]);
 
-    struct runtime_state rt;
-    memset(&rt, 0, sizeof(rt));
+    /* forwarder is ~585 KiB; keep runtime off the main-thread stack (avoids segfault on small stacks). */
+    struct runtime_state *rt = calloc(1, sizeof(*rt));
+    if (!rt) {
+        fprintf(stderr, "[FATAL] out of memory for runtime state\n");
+        PQfinish(listen_conn);
+        return 1;
+    }
+
     int active_ids[MAX_ACTIVE_PROFILE_IDS];
     int active_id_count = 0;
 
@@ -388,13 +411,13 @@ int main(int argc, char **argv) {
         PQconsumeInput(listen_conn);
         PGnotify *notify;
         while ((notify = PQnotifies(listen_conn)) != NULL) {
-            int id = atoi(notify->extra);
+            int id = parse_notify_profile_id(notify->extra);
             if (id <= 0) {
                 fprintf(stderr,
                         "[WARN] ignoring NOTIFY with invalid id payload: \"%s\"\n",
                         notify->extra ? notify->extra : "");
             } else {
-                (void)handle_profile_notify(&rt, active_ids, &active_id_count, id);
+                (void)handle_profile_notify(rt, active_ids, &active_id_count, id);
             }
             PQfreemem(notify);
         }
@@ -405,9 +428,10 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (rt.has_thread) {
-        pthread_join(rt.thread, NULL);
+    if (rt->has_thread) {
+        runtime_stop_forwarder(rt);
     }
+    free(rt);
     PQfinish(listen_conn);
     return 0;
 }
