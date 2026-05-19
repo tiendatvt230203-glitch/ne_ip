@@ -2,6 +2,7 @@
 #define DB_ENV_H
 
 #define NE_ENV_FILE "/opt/SEP/be/.env"
+#define NE_STATE_DIR  "/var/lib/network-encryptor"
 
 struct ne_postgres_conn {
     const char *keywords[7];

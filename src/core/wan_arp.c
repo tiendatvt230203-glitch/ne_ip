@@ -297,60 +297,24 @@ int local_rewrite_dest_mac(struct arp_cache *local_cache,
     return -1;
 }
 
-static void format_ipv4_be(uint32_t ip_be, char *buf, size_t bufsz) {
-    struct in_addr a = { .s_addr = ip_be };
-    if (!inet_ntop(AF_INET, &a, buf, bufsz))
-        snprintf(buf, bufsz, "?");
-}
-
 void local_log_arp_ready(const struct arp_cache *c) {
-    if (!c)
-        return;
-
-    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
-    if (c->if_ip != 0)
-        format_ipv4_be(c->if_ip, local_ip, sizeof(local_ip));
-
-    fprintf(stderr,
-            "[LAN ARP] if=%s local_ip=%s local_mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
-            c->ifname,
-            local_ip,
-            c->if_mac[0], c->if_mac[1], c->if_mac[2],
-            c->if_mac[3], c->if_mac[4], c->if_mac[5]);
+    (void)c;
 }
 
 static void log_peer_arp_resolved(struct arp_cache *c,
                                   const char *tag,
                                   const char *ifname,
                                   uint32_t peer_ip) {
-    char peer_ipstr[INET_ADDRSTRLEN] = {0};
-    char local_ip[INET_ADDRSTRLEN] = "0.0.0.0";
-    format_ipv4_be(peer_ip, peer_ipstr, sizeof(peer_ipstr));
-    if (c->if_ip != 0)
-        format_ipv4_be(c->if_ip, local_ip, sizeof(local_ip));
+    (void)tag;
+    (void)ifname;
 
     uint8_t mac[6];
     for (int tries = 0; tries < 10; tries++) {
-        if (arp_cache_lookup(c, peer_ip, mac)) {
-            fprintf(stderr,
-                    "[%s] if=%s local_ip=%s peer_ip=%s dest_mac=%02x:%02x:%02x:%02x:%02x:%02x (peer resolved)\n",
-                    tag,
-                    ifname,
-                    local_ip,
-                    peer_ipstr,
-                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        if (arp_cache_lookup(c, peer_ip, mac))
             return;
-        }
         arp_send_request(c, peer_ip);
         usleep(100000);
     }
-    fprintf(stderr,
-            "[%s] if=%s local_ip=%s peer_ip=%s dest_mac=UNRESOLVED (check L2 / IP on %s)\n",
-            tag,
-            ifname,
-            local_ip,
-            peer_ipstr,
-            ifname);
 }
 
 void local_log_peer_mac(struct arp_cache *local_cache,

@@ -11,7 +11,6 @@
 #include <stdatomic.h>
 
 static uint16_t g_fake_ethertype_ipv4 = 0;
-static uint16_t g_fake_ethertype_ipv6 = 0;
 static __thread uint8_t g_fake_protocol = 99;
 static int g_encrypt_layer = 0;
 
@@ -78,12 +77,12 @@ void crypto_read_l3_tunnel_header(const uint8_t *buf, int nonce_size,
     if (orig_proto) *orig_proto = buf[nonce_size + 1];
 }
 
-void packet_crypto_set_ethertype(uint16_t fake_ipv4, uint16_t fake_ipv6) {
+void packet_crypto_set_fake_ethertype(uint16_t fake_ipv4) {
     g_fake_ethertype_ipv4 = fake_ipv4;
-    g_fake_ethertype_ipv6 = fake_ipv6;
 }
-uint16_t packet_crypto_get_fake_ethertype_ipv4(void) { return g_fake_ethertype_ipv4; }
-uint16_t packet_crypto_get_fake_ethertype_ipv6(void) { return g_fake_ethertype_ipv6; }
+uint16_t packet_crypto_get_fake_ethertype_ipv4(void) {
+    return g_fake_ethertype_ipv4;
+}
 
 void packet_crypto_set_encrypt_layer(int layer) { g_encrypt_layer = layer; }
 
@@ -439,12 +438,6 @@ void crypto_restore_ipv4_header(uint8_t *packet, size_t pkt_len) {
     (void)pkt_len;
     packet[12] = 0x08;
     packet[13] = 0x00;
-}
-
-void crypto_restore_ipv6_header(uint8_t *packet, size_t pkt_len) {
-    (void)pkt_len;
-    packet[12] = 0x86;
-    packet[13] = 0xDD;
 }
 
 int packet_encrypt(struct packet_crypto_ctx *ctx,

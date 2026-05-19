@@ -186,68 +186,6 @@ int config_validate(struct app_config *cfg) {
         }
     }
 
-    if (cfg->profile_count > 0 && cfg->wan_count > 0) {
-        int wan_owner[MAX_INTERFACES];
-        for (int i = 0; i < cfg->wan_count; i++)
-            wan_owner[i] = -1;
-
-        for (int pi = 0; pi < cfg->profile_count; pi++) {
-            struct profile_config *p = &cfg->profiles[pi];
-            for (int wi = 0; wi < p->wan_count; wi++) {
-                int idx = p->wan_indices[wi];
-                if (idx < 0 || idx >= cfg->wan_count)
-                    continue;
-                if (wan_owner[idx] >= 0) {
-                    if (wan_owner[idx] != pi) {
-                        fprintf(stderr,
-                                "[CONFIG] WAN \"%s\" is used by both profile \"%s\" and \"%s\"; "
-                                "each WAN must belong to exactly one profile.\n",
-                                cfg->wans[idx].ifname,
-                                cfg->profiles[wan_owner[idx]].name,
-                                p->name);
-                        return -1;
-                    }
-                    fprintf(stderr,
-                            "[CONFIG] WAN \"%s\" is listed more than once in profile \"%s\".\n",
-                            cfg->wans[idx].ifname, p->name);
-                    return -1;
-                }
-                wan_owner[idx] = pi;
-            }
-        }
-    }
-
-    if (cfg->profile_count > 0 && cfg->local_count > 0) {
-        int local_owner[MAX_INTERFACES];
-        for (int i = 0; i < cfg->local_count; i++)
-            local_owner[i] = -1;
-
-        for (int pi = 0; pi < cfg->profile_count; pi++) {
-            struct profile_config *p = &cfg->profiles[pi];
-            for (int li = 0; li < p->local_count; li++) {
-                int idx = p->local_indices[li];
-                if (idx < 0 || idx >= cfg->local_count)
-                    continue;
-                if (local_owner[idx] >= 0) {
-                    if (local_owner[idx] != pi) {
-                        fprintf(stderr,
-                                "[CONFIG] LOCAL \"%s\" is in both profile \"%s\" and \"%s\"; "
-                                "each local NIC belongs to exactly one profile.\n",
-                                cfg->locals[idx].ifname,
-                                cfg->profiles[local_owner[idx]].name,
-                                p->name);
-                        return -1;
-                    }
-                    fprintf(stderr,
-                            "[CONFIG] LOCAL \"%s\" listed more than once in profile \"%s\".\n",
-                            cfg->locals[idx].ifname, p->name);
-                    return -1;
-                }
-                local_owner[idx] = pi;
-            }
-        }
-    }
-
     return 0;
 }
 

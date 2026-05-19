@@ -15,7 +15,6 @@
 #define ETH_HEADER_SIZE       14
 
 #define PROTO_FLAG_IPV4  0
-#define PROTO_FLAG_IPV6  1
 
 #define KEY_SLOT_PREV    0
 #define KEY_SLOT_CURRENT 1
@@ -48,9 +47,8 @@ int packet_decrypt(struct packet_crypto_ctx *ctx,
 
 void packet_crypto_cleanup(struct packet_crypto_ctx *ctx);
 
-void packet_crypto_set_ethertype(uint16_t fake_ipv4, uint16_t fake_ipv6);
+void packet_crypto_set_fake_ethertype(uint16_t fake_ipv4);
 uint16_t packet_crypto_get_fake_ethertype_ipv4(void);
-uint16_t packet_crypto_get_fake_ethertype_ipv6(void);
 
 void packet_crypto_set_fake_protocol(uint8_t proto);
 uint8_t packet_crypto_get_fake_protocol(void);
@@ -107,7 +105,6 @@ void crypto_read_counter(const uint8_t *packet, int nonce_size,
                          uint8_t *nonce_out, uint8_t *policy_id, uint8_t *proto_flag);
 
 void crypto_restore_ipv4_header(uint8_t *packet, size_t pkt_len);
-void crypto_restore_ipv6_header(uint8_t *packet, size_t pkt_len);
 
 uint16_t crypto_calc_ip_checksum(const uint8_t *ip_hdr, int hdr_len);
 

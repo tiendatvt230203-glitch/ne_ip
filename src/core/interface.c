@@ -270,11 +270,6 @@ have_enc:
         ok = 1;
     }
 
-    if (ok) {
-        fprintf(stderr,
-                "[XDP] profile-aware encrypt: profiles=%u require_filter=%d encrypt_entries=%u\n",
-                ctrl.profile_count, require_filter, enc_pos);
-    }
     return ok ? 0 : -1;
 }
 
@@ -661,8 +656,7 @@ int interface_init_wan(struct xsk_interface *iface,
 int interface_init_wan_rx(struct xsk_interface *iface,
                           const struct wan_config *wan_cfg,
                           const char *bpf_file,
-                          uint16_t fake_ethertype_ipv4,
-                          uint16_t fake_ethertype_ipv6) {
+                          uint16_t fake_ethertype_ipv4) {
     int ret;
     struct bpf_object *wan_bpf_obj = NULL;
     struct bpf_program *prog;
@@ -736,15 +730,10 @@ int interface_init_wan_rx(struct xsk_interface *iface,
             if (bpf_map_update_elem(wcfg_fd, &cfg_key, &fe, BPF_ANY) != 0)
                 fprintf(stderr, "[XDP] WAN wan_config_map update failed (fake4=0x%04x)\n",
                         (unsigned)fake_ethertype_ipv4);
-            else
-                fprintf(stderr, "[XDP] WAN %s: L2 redirect ethertype 0x%04x -> AF_XDP\n",
-                        iface->ifname, (unsigned)fake_ethertype_ipv4);
         } else {
             fprintf(stderr, "[XDP] WARN: wan_config_map missing in %s\n", bpf_file);
         }
     }
-    (void)fake_ethertype_ipv6;
-
     map = bpf_object__find_map_by_name(wan_bpf_obj, "encrypt_ctrl_map");
     int enc_ctrl_fd = map ? bpf_map__fd(map) : -1;
     map = bpf_object__find_map_by_name(wan_bpf_obj, "profile_meta_map");

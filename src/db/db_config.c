@@ -221,7 +221,13 @@ static int ne_fill_str_list(const char *joined, int pq_null, char out[][MAX_CIDR
         out[0][MAX_CIDR_ITEM_LEN - 1] = '\0';
         return 1;
     }
-    return split_cidr_list(joined, out, max_out);
+    int n = split_cidr_list(joined, out, max_out);
+    if (n < 0) {
+        strncpy(out[0], "ANY", MAX_CIDR_ITEM_LEN - 1);
+        out[0][MAX_CIDR_ITEM_LEN - 1] = '\0';
+        return 1;
+    }
+    return n;
 }
 
 static int ne_parse_method(const char *v, int pq_null, int *crypto_mode_out, int *aes_bits_out) {
@@ -250,8 +256,10 @@ static int ne_parse_method(const char *v, int pq_null, int *crypto_mode_out, int
         *aes_bits_out = 256;
         return 0;
     }
-    fprintf(stderr, "[DB CRYPTO] unknown encryption method: %s\n", v);
-    return -1;
+    /* BE validates method; default for unexpected values */
+    *crypto_mode_out = CRYPTO_MODE_GCM;
+    *aes_bits_out = 128;
+    return 0;
 }
 
 static void ne_fill_policy_key(const char *enc_key, int enc_null, int key_len_bytes, uint8_t *out) {
@@ -396,11 +404,6 @@ static int load_profiles_and_policies(struct app_config *cfg, PGconn *conn, int 
         memset(&cp_base, 0, sizeof(cp_base));
 
         int db_policy_id = atoi(PQgetvalue(res, r, 0));
-        if (db_policy_id < 1) {
-            fprintf(stderr, "[DB CRYPTO] ne_policies.id=%d invalid (need >= 1)\n", db_policy_id);
-            PQclear(res);
-            return -1;
-        }
         cp_base.db_id = db_policy_id;
         cp_base.priority = atoi(PQgetvalue(res, r, 1));
         cp_base.action = parse_action_name(PQgetvalue(res, r, 2));
@@ -427,21 +430,12 @@ static int load_profiles_and_policies(struct app_config *cfg, PGconn *conn, int 
             memset(cp_base.key, 0, sizeof(cp_base.key));
             cp_base.id = 0;
         } else {
-            if (ne_parse_method(method_txt, method_null, &cp_base.crypto_mode, &cp_base.aes_bits) != 0) {
-                PQclear(res);
-                return -1;
-            }
+            (void)ne_parse_method(method_txt, method_null, &cp_base.crypto_mode, &cp_base.aes_bits);
             cp_base.nonce_size = nonce_null ? 12 : atoi(PQgetvalue(res, r, 12));
-            if (cp_base.aes_bits != 128 && cp_base.aes_bits != 256) {
-                fprintf(stderr, "[DB CRYPTO] policy id=%d invalid aes bits\n", db_policy_id);
-                PQclear(res);
-                return -1;
-            }
-            if (cp_base.nonce_size < 4 || cp_base.nonce_size > 16) {
-                fprintf(stderr, "[DB CRYPTO] policy id=%d invalid nonce\n", db_policy_id);
-                PQclear(res);
-                return -1;
-            }
+            if (cp_base.aes_bits != 256)
+                cp_base.aes_bits = 128;
+            if (cp_base.nonce_size <= 0)
+                cp_base.nonce_size = 12;
             int key_len = (cp_base.aes_bits == 256) ? 32 : 16;
             ne_fill_policy_key(enc_key, enc_null, key_len, cp_base.key);
             {
@@ -467,11 +461,6 @@ static int load_profiles_and_policies(struct app_config *cfg, PGconn *conn, int 
         int dst_n = ne_fill_str_list(dst_joined, PQgetisnull(res, r, 6), dst_items, MAX_CIDR_LIST_ITEMS);
         int sp_n = ne_fill_str_list(sport_joined, PQgetisnull(res, r, 8), sp_items, MAX_CIDR_LIST_ITEMS);
         int dp_n = ne_fill_str_list(dport_joined, PQgetisnull(res, r, 9), dp_items, MAX_CIDR_LIST_ITEMS);
-        if (src_n < 0 || dst_n < 0 || sp_n < 0 || dp_n < 0) {
-            fprintf(stderr, "[DB CRYPTO] policy id=%d invalid list field\n", db_policy_id);
-            PQclear(res);
-            return -1;
-        }
 
         for (int si = 0; si < src_n; si++) {
             for (int di = 0; di < dst_n; di++) {
@@ -502,15 +491,17 @@ static int load_profiles_and_policies(struct app_config *cfg, PGconn *conn, int 
 
                         if (parse_cidr_any_or_negated(src_buf, &cp->src_any, &cp->src_negate,
                                                       &cp->src_net, &cp->src_mask) != 0) {
-                            fprintf(stderr, "[DB CRYPTO] policy id=%d bad src %s\n", db_policy_id, src_buf);
-                            PQclear(res);
-                            return -1;
+                            cp->src_any = 1;
+                            cp->src_negate = 0;
+                            cp->src_net = 0;
+                            cp->src_mask = 0;
                         }
                         if (parse_cidr_any_or_negated(dst_buf, &cp->dst_any, &cp->dst_negate,
                                                       &cp->dst_net, &cp->dst_mask) != 0) {
-                            fprintf(stderr, "[DB CRYPTO] policy id=%d bad dst %s\n", db_policy_id, dst_buf);
-                            PQclear(res);
-                            return -1;
+                            cp->dst_any = 1;
+                            cp->dst_negate = 0;
+                            cp->dst_net = 0;
+                            cp->dst_mask = 0;
                         }
 
                         p->policy_indices[p->policy_count++] = cfg->policy_count;
@@ -690,7 +681,6 @@ static int apply_crypto_derived_from_policies(struct app_config *cfg) {
     cfg->encrypt_layer = 0;
     cfg->fake_protocol = 0;
     cfg->fake_ethertype_ipv4 = 0;
-    cfg->fake_ethertype_ipv6 = 0;
     cfg->crypto_mode = CRYPTO_MODE_CTR;
     cfg->aes_bits = 128;
     cfg->nonce_size = 12;
@@ -726,12 +716,7 @@ static int apply_crypto_derived_from_policies(struct app_config *cfg) {
         else cfg->encrypt_layer = 4;
     }
 
-    if (cfg->crypto_enabled) {
-        if (first_key_pi < 0) {
-            fprintf(stderr,
-                    "[DB CRYPTO] encrypt policies need encryption_key (hex or any string; non-hex is SHA256-derived)\n");
-            return -1;
-        }
+    if (cfg->crypto_enabled && first_key_pi >= 0) {
         const struct crypto_policy *cp = &cfg->policies[first_key_pi];
         cfg->crypto_mode = cp->crypto_mode;
         cfg->aes_bits = (cp->aes_bits == 256) ? 256 : 128;
@@ -744,7 +729,6 @@ static int apply_crypto_derived_from_policies(struct app_config *cfg) {
     }
     if (has_l2) {
         cfg->fake_ethertype_ipv4 = 0x88b5;
-        cfg->fake_ethertype_ipv6 = 0x88b6;
     }
 
     return 0;

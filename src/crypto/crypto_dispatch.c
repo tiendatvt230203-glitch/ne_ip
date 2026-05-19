@@ -8,8 +8,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#define L4_TUNNEL_MAGIC    0xA5
-
 static int lookup_policy_index(const struct crypto_dispatch_ctx *dctx,
                                const struct crypto_policy *policies,
                                int policy_count,
@@ -40,35 +38,22 @@ int crypto_l3_extract_policy_id(uint8_t *pkt, uint32_t pkt_len, uint8_t *policy_
     if (!pkt || !policy_id_out || pkt_len < 14 + 20)
         return -1;
 
-    uint16_t ether_type = ((uint16_t)pkt[12] << 8) | pkt[13];
-    int l3_off;
-    int ip_hdr_len;
-    uint8_t proto;
+    if ((((uint16_t)pkt[12] << 8) | pkt[13]) != 0x0800)
+        return -1;
+
+    int l3_off = 14;
+    int ip_hdr_len = (pkt[l3_off] & 0x0F) * 4;
+    if (ip_hdr_len < 20 || pkt_len < (uint32_t)(l3_off + ip_hdr_len + 1))
+        return -1;
+
     uint8_t marker = packet_crypto_get_fake_protocol();
     if (marker == 0)
         marker = 99;
+    if (pkt[l3_off + 9] != marker)
+        return -1;
+
     int nonce_size = packet_crypto_get_nonce_size();
     int tunnel_hdr_size = packet_crypto_get_tunnel_hdr_size();
-
-    if (ether_type == 0x0800) {
-        l3_off = 14;
-        ip_hdr_len = (pkt[l3_off] & 0x0F) * 4;
-        if (ip_hdr_len < 20 || pkt_len < (uint32_t)(l3_off + ip_hdr_len + 1))
-            return -1;
-        proto = pkt[l3_off + 9];
-    } else if (ether_type == 0x86DD) {
-        l3_off = 14;
-        ip_hdr_len = 40;
-        if (pkt_len < (uint32_t)(l3_off + ip_hdr_len + 1))
-            return -1;
-        proto = pkt[l3_off + 6];
-    } else {
-        return -1;
-    }
-
-    if (proto != marker)
-        return -1;
-
     int tunnel_off = l3_off + ip_hdr_len;
     if (pkt_len < (uint32_t)(tunnel_off + tunnel_hdr_size))
         return -1;
@@ -96,51 +81,25 @@ int crypto_l4_extract_policy_id_ipv4(uint8_t *pkt,
     if (pkt_len < (uint32_t)(l3_off + ip_hdr_len + 8))
         return -1;
 
-    uint8_t ip_proto = pkt[l3_off + 9];
+    if (pkt[l3_off + 9] != 6 && pkt[l3_off + 9] != 17)
+        return -1;
+
     int transport_off = l3_off + ip_hdr_len;
+    int wire_port_len = crypto_layer4_wire_port_len();
     int candidates[4] = {4, 8, 12, 16};
 
-    if (ip_proto == 6) {
-        if (pkt_len < (uint32_t)(transport_off + 20))
-            return -1;
-        uint8_t tcp_hdr_len = ((pkt[transport_off + 12] >> 4) & 0x0F) * 4;
-        if (tcp_hdr_len < 20)
-            return -1;
-        int legacy_tun = transport_off + tcp_hdr_len;
-
-        for (int i = 0; i < 4; i++) {
-            int ns = candidates[i];
-
-            if (transport_off + ns + 1 < (int)pkt_len &&
-                pkt[transport_off + ns + 1] == L4_TUNNEL_MAGIC) {
-                *nonce_size_out = ns;
-                *policy_id_out = pkt[transport_off + ns];
-                return 0;
-            }
-
-            if (legacy_tun + ns + 1 < (int)pkt_len &&
-                pkt[legacy_tun + ns + 1] == L4_TUNNEL_MAGIC) {
-                *nonce_size_out = ns;
-                *policy_id_out = pkt[legacy_tun + ns];
-                return 0;
-            }
-        }
+    int tunnel_off = transport_off + wire_port_len;
+    if (tunnel_off >= (int)pkt_len)
         return -1;
-    }
 
-    if (ip_proto == 17) {
-        int tunnel_off = transport_off + 8;
-        if (tunnel_off >= (int)pkt_len)
-            return -1;
-        for (int i = 0; i < 4; i++) {
-            int ns = candidates[i];
-            if (tunnel_off + ns + 1 >= (int)pkt_len)
-                continue;
-            if (pkt[tunnel_off + ns + 1] == L4_TUNNEL_MAGIC) {
-                *nonce_size_out = ns;
-                *policy_id_out = pkt[tunnel_off + ns];
-                return 0;
-            }
+    for (int i = 0; i < 4; i++) {
+        int ns = candidates[i];
+        if (tunnel_off + ns + 1 >= (int)pkt_len)
+            continue;
+        if (pkt[tunnel_off + ns + 1] == CRYPTO_L4_TUNNEL_MAGIC) {
+            *nonce_size_out = ns;
+            *policy_id_out = pkt[tunnel_off + ns];
+            return 0;
         }
     }
 
