@@ -80,10 +80,12 @@ static int frag_store_pending(struct frag_entry *entry, uint16_t pkt_id,
     return 0;
 }
 
-int frag_is_fragment(const uint8_t *pkt_data, uint32_t pkt_len,
+int frag_is_fragment(const struct app_config *cfg,
+                     const uint8_t *pkt_data, uint32_t pkt_len,
                      uint16_t *pkt_id, uint8_t *frag_index) {
+    if (!cfg)
+        return 0;
     int ip_hdr_len;
-    int nonce_size = packet_crypto_get_nonce_size();
     int tunnel_hdr_size = packet_crypto_get_tunnel_hdr_size();
 
     if (frag_require_ipv4(pkt_data, pkt_len, &ip_hdr_len) != 0)
@@ -94,13 +96,24 @@ int frag_is_fragment(const uint8_t *pkt_data, uint32_t pkt_len,
     int tunnel_off = 14 + ip_hdr_len;
     if (pkt_len < (uint32_t)(tunnel_off + tunnel_hdr_size + CRYPTO_L3_FRAG_TAG_SIZE))
         return 0;
-    if (pkt_data[tunnel_off + nonce_size + 1] != CRYPTO_L3_FRAG_MAGIC)
-        return 0;
 
-    frag_read_hdr(pkt_data + tunnel_off + tunnel_hdr_size, pkt_id, frag_index);
-    if (*frag_index > 1)
-        return 0;
-    return 1;
+    for (int pi = 0; pi < cfg->policy_count && pi < MAX_CRYPTO_POLICIES; pi++) {
+        const struct crypto_policy *cp = &cfg->policies[pi];
+        if (!cp || cp->action != POLICY_ACTION_ENCRYPT_L3 || cp->nonce_size <= 0)
+            continue;
+        int ns = cp->nonce_size;
+        if (tunnel_off + ns + 1 >= (int)pkt_len)
+            continue;
+        if (pkt_data[tunnel_off + ns + 1] != CRYPTO_L3_FRAG_MAGIC)
+            continue;
+        if (pkt_data[tunnel_off + ns] != (uint8_t)cp->id)
+            continue;
+        frag_read_hdr(pkt_data + tunnel_off + tunnel_hdr_size, pkt_id, frag_index);
+        if (*frag_index > 1)
+            return 0;
+        return 1;
+    }
+    return 0;
 }
 
 int frag_split_and_encrypt(struct packet_crypto_ctx *ctx,
@@ -308,25 +321,34 @@ int frag_split_and_encrypt_l2(struct packet_crypto_ctx *ctx,
     return 0;
 }
 
-int frag_is_fragment_l2(const uint8_t *pkt_data, uint32_t pkt_len,
+int frag_is_fragment_l2(const struct app_config *cfg,
+                        const uint8_t *pkt_data, uint32_t pkt_len,
                         uint16_t *pkt_id, uint8_t *frag_index) {
-    int nonce_size = packet_crypto_get_nonce_size();
-    int tag_off = 14 + nonce_size;
-
-    if (pkt_len < (uint32_t)(tag_off + 1 + CRYPTO_L2_FRAG_TAG_SIZE))
+    if (!cfg)
+        return 0;
+    if (pkt_len < (uint32_t)(14 + 4 + 1 + CRYPTO_L2_FRAG_TAG_SIZE))
         return 0;
 
     uint16_t fake_ipv4 = packet_crypto_get_fake_ethertype_ipv4();
     if (!fake_ipv4 || pkt_data[12] != (uint8_t)(fake_ipv4 >> 8))
         return 0;
 
-    if (pkt_data[tag_off] != CRYPTO_L2_FRAG_MAGIC)
-        return 0;
-
-    frag_read_hdr(pkt_data + tag_off + 1, pkt_id, frag_index);
-    if (*frag_index > 1)
-        return 0;
-    return 1;
+    for (int pi = 0; pi < cfg->policy_count && pi < MAX_CRYPTO_POLICIES; pi++) {
+        const struct crypto_policy *cp = &cfg->policies[pi];
+        if (!cp || cp->action != POLICY_ACTION_ENCRYPT_L2 || cp->nonce_size <= 0)
+            continue;
+        int ns = cp->nonce_size;
+        int tag_off = 14 + ns;
+        if (tag_off + 1 + CRYPTO_L2_FRAG_TAG_SIZE > (int)pkt_len)
+            continue;
+        if (pkt_data[tag_off] != CRYPTO_L2_FRAG_MAGIC)
+            continue;
+        frag_read_hdr(pkt_data + tag_off + 1, pkt_id, frag_index);
+        if (*frag_index > 1)
+            return 0;
+        return 1;
+    }
+    return 0;
 }
 
 int frag_try_reassemble_l2(struct frag_table *ft,
@@ -408,6 +430,10 @@ int frag_try_reassemble_l2(struct frag_table *ft,
 
         frag_patch_ipv4(out_buf + wire_eth, entry->ip_hdr_len, (uint16_t)(off - wire_eth));
 
+        /* Per-frag decrypt leaves fake L2 ethertype in eth_hdr; forwarder needs IPv4. */
+        out_buf[12] = 0x08;
+        out_buf[13] = 0x00;
+
         *out_len = (uint32_t)off;
         entry->valid = 0;
         return 1;
@@ -468,8 +494,11 @@ int frag_split_and_encrypt_l4(struct packet_crypto_ctx *ctx,
     return 0;
 }
 
-int frag_is_fragment_l4(const uint8_t *pkt_data, uint32_t pkt_len,
+int frag_is_fragment_l4(const struct app_config *cfg,
+                        const uint8_t *pkt_data, uint32_t pkt_len,
                         uint16_t *pkt_id, uint8_t *frag_index) {
+    if (!cfg)
+        return 0;
     if (pkt_len < 14 + 20 + 8) return 0;
 
     uint16_t ether_type = ((uint16_t)pkt_data[12] << 8) | pkt_data[13];
@@ -482,18 +511,27 @@ int frag_is_fragment_l4(const uint8_t *pkt_data, uint32_t pkt_len,
     if (ip_hdr_len < 20) return 0;
 
     int transport_off = 14 + ip_hdr_len;
-    int nonce_size = packet_crypto_get_nonce_size();
     int tunnel_hdr_size = packet_crypto_get_tunnel_hdr_size();
     int tunnel_off = transport_off + crypto_layer4_wire_port_len();
 
     if (pkt_len < (uint32_t)(tunnel_off + tunnel_hdr_size + FRAG_L4_HDR_SIZE))
         return 0;
 
-    if (pkt_data[tunnel_off + nonce_size + 1] != CRYPTO_L4_FRAG_MAGIC)
-        return 0;
-
-    frag_read_hdr(pkt_data + tunnel_off + tunnel_hdr_size, pkt_id, frag_index);
-    return 1;
+    for (int pi = 0; pi < cfg->policy_count && pi < MAX_CRYPTO_POLICIES; pi++) {
+        const struct crypto_policy *cp = &cfg->policies[pi];
+        if (!cp || cp->action != POLICY_ACTION_ENCRYPT_L4 || cp->nonce_size <= 0)
+            continue;
+        int ns = cp->nonce_size;
+        if (tunnel_off + ns + 1 >= (int)pkt_len)
+            continue;
+        if (pkt_data[tunnel_off + ns + 1] != CRYPTO_L4_FRAG_MAGIC)
+            continue;
+        if (pkt_data[tunnel_off + ns] != (uint8_t)cp->id)
+            continue;
+        frag_read_hdr(pkt_data + tunnel_off + tunnel_hdr_size, pkt_id, frag_index);
+        return (*frag_index <= 1) ? 1 : 0;
+    }
+    return 0;
 }
 
 int frag_try_reassemble_l4(struct frag_table *ft,

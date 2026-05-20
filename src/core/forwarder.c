@@ -9,7 +9,6 @@
 #include "../../inc/crypto_policy_utils.h"
 #include "../../inc/crypto_dispatch.h"
 #include "../../inc/fragment.h"
-#include <signal.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -817,13 +816,12 @@ static int decrypt_packet_auto_l2(struct forwarder *fwd,
 }
 
 
-static int l3_extract_policy_id(uint8_t *pkt, uint32_t pkt_len,
+static int l3_extract_policy_id(const struct app_config *cfg,
+                                uint8_t *pkt, uint32_t pkt_len,
                                 uint8_t *policy_id_out) {
-    if (!pkt || !policy_id_out || pkt_len < 14 + 20)
+    if (!cfg || !pkt || !policy_id_out || pkt_len < 14 + 20)
         return -1;
-
-
-    return crypto_l3_extract_policy_id(pkt, pkt_len, policy_id_out);
+    return crypto_l3_extract_policy_id(cfg, pkt, pkt_len, policy_id_out);
 }
 
 static int decrypt_packet_auto_by_action(struct forwarder *fwd,
@@ -864,7 +862,7 @@ static struct packet_crypto_ctx *forwarder_resolve_l3_decrypt_ctx(struct forward
     }
 
     uint8_t policy_id = 0;
-    if (crypto_l3_extract_policy_id(pkt, pkt_len, &policy_id) != 0)
+    if (crypto_l3_extract_policy_id(fwd->cfg, pkt, pkt_len, &policy_id) != 0)
         return NULL;
 
     int pi = g_policy_index_by_action_id[POLICY_ACTION_ENCRYPT_L3][policy_id];
@@ -921,7 +919,7 @@ static struct packet_crypto_ctx *forwarder_resolve_l4_decrypt_ctx(struct forward
 
     uint8_t policy_id = 0;
     int nonce_size = 0;
-    if (crypto_l4_extract_policy_id_ipv4(pkt, pkt_len, &policy_id, &nonce_size) != 0)
+    if (crypto_l4_extract_policy_id_ipv4(fwd->cfg, pkt, pkt_len, &policy_id, &nonce_size) != 0)
         return NULL;
 
     int pi = g_policy_index_by_action_id[POLICY_ACTION_ENCRYPT_L4][policy_id];
@@ -945,11 +943,6 @@ static struct packet_crypto_ctx *forwarder_resolve_l4_decrypt_ctx(struct forward
     return NULL;
 }
 
-
-static void sigint_handler(int sig) {
-    (void)sig;
-    running = 0;
-}
 
 static uint32_t get_dest_ip(void *pkt_data, uint32_t pkt_len) {
     if (pkt_len < sizeof(struct ether_header) + sizeof(struct iphdr))
@@ -1039,7 +1032,10 @@ static void *gc_thread(void *arg) {
     (void)arg;
     forwarder_pin_cpu();
     while (running) {
-        sleep(60); 
+        for (int i = 0; i < 600 && running; i++)
+            usleep(100000);
+        if (!running)
+            break;
         flow_table_gc(&g_flow_table);
         tcp_policy_pin_gc();
         frag_table_gc(&g_wan_frag_l2);
@@ -1477,7 +1473,7 @@ static void *wan_queue_thread_l2(void *arg) {
             {
                 uint16_t fpid;
                 uint8_t fidx;
-                if (frag_is_fragment_l2(pkt, pkt_len, &fpid, &fidx)) {
+                if (frag_is_fragment_l2(fwd->cfg, pkt, pkt_len, &fpid, &fidx)) {
                     struct packet_crypto_ctx *l2ctx = forwarder_resolve_l2_decrypt_ctx(fwd, pkt);
                     if (!l2ctx) {
                         __sync_fetch_and_add(&fwd->total_dropped, 1);
@@ -1667,8 +1663,8 @@ static void *wan_queue_thread_l3l4(void *arg) {
             if (wire_flow_ok && is_ssh_flow(wire_proto, wire_src_port, wire_dst_port)) {
                 uint8_t l3pid = 0, l4pid = 0;
                 int l4nonce = 0;
-                int l3ok = (crypto_l3_extract_policy_id(wire_pkt, wire_len, &l3pid) == 0);
-                int l4ok = (crypto_l4_extract_policy_id_ipv4(wire_pkt, wire_len, &l4pid, &l4nonce) == 0);
+                int l3ok = (crypto_l3_extract_policy_id(fwd->cfg, wire_pkt, wire_len, &l3pid) == 0);
+                int l4ok = (crypto_l4_extract_policy_id_ipv4(fwd->cfg, wire_pkt, wire_len, &l4pid, &l4nonce) == 0);
                 log_tcp_diag_decrypt("RX-WIRE",
                                      wire_src_ip, wire_src_port, wire_dst_ip, wire_dst_port,
                                      POLICY_ACTION_ENCRYPT_L4,
@@ -1683,7 +1679,7 @@ static void *wan_queue_thread_l3l4(void *arg) {
                 fwd->cfg && fwd->cfg->policy_count > 0) {
                 uint8_t policy_id = 0;
                 int found = 0;
-                if (l3_extract_policy_id(pkt, pkt_len, &policy_id) == 0) {
+                if (l3_extract_policy_id(fwd->cfg, pkt, pkt_len, &policy_id) == 0) {
                     int pi = g_policy_index_by_action_id[POLICY_ACTION_ENCRYPT_L3][policy_id];
                     if (pi >= 0 && pi < fwd->cfg->policy_count && g_policy_crypto_ctx_ready[pi]) {
                         const struct crypto_policy *cp = &fwd->cfg->policies[pi];
@@ -1711,7 +1707,7 @@ static void *wan_queue_thread_l3l4(void *arg) {
                 if (has_l2_marker) {
                     uint16_t l2fpid;
                     uint8_t l2fidx;
-                    if (frag_is_fragment_l2(pkt, pkt_len, &l2fpid, &l2fidx)) {
+                    if (frag_is_fragment_l2(fwd->cfg, pkt, pkt_len, &l2fpid, &l2fidx)) {
                         struct packet_crypto_ctx *l2ctx =
                             forwarder_resolve_l2_decrypt_ctx(fwd, pkt);
                         if (!l2ctx) {
@@ -1754,9 +1750,9 @@ static void *wan_queue_thread_l3l4(void *arg) {
             if (crypto_enabled) {
                 uint16_t l3_frag_pid;
                 uint8_t l3_frag_idx;
-                if (frag_is_fragment(pkt, pkt_len, &l3_frag_pid, &l3_frag_idx)) {
+                if (frag_is_fragment(fwd->cfg, pkt, pkt_len, &l3_frag_pid, &l3_frag_idx)) {
                     uint8_t l3_pid = 0;
-                    if (crypto_l3_extract_policy_id(pkt, pkt_len, &l3_pid) == 0) {
+                    if (crypto_l3_extract_policy_id(fwd->cfg, pkt, pkt_len, &l3_pid) == 0) {
                         int pi = policy_index_from_action_id_current(fwd, POLICY_ACTION_ENCRYPT_L3, l3_pid);
                         if (pi >= 0)
                             inbound_policy_pi = pi;
@@ -1802,8 +1798,8 @@ static void *wan_queue_thread_l3l4(void *arg) {
                         uint8_t l3pid = 0;
                         int l4nonce = 0;
                         uint8_t l4pid = 0;
-                        int l3ok = (crypto_l3_extract_policy_id(wire_pkt, wire_len, &l3pid) == 0);
-                        int l4ok = (crypto_l4_extract_policy_id_ipv4(wire_pkt, wire_len, &l4pid, &l4nonce) == 0);
+                        int l3ok = (crypto_l3_extract_policy_id(fwd->cfg, wire_pkt, wire_len, &l3pid) == 0);
+                        int l4ok = (crypto_l4_extract_policy_id_ipv4(fwd->cfg, wire_pkt, wire_len, &l4pid, &l4nonce) == 0);
                         log_tcp_diag_decrypt("RX-DEC-FAIL",
                                              ds, dsp, dd, ddp,
                                              POLICY_ACTION_ENCRYPT_L3,
@@ -1815,7 +1811,7 @@ static void *wan_queue_thread_l3l4(void *arg) {
                     continue;
                 } else {
                     uint8_t l3_pid = 0;
-                    if (crypto_l3_extract_policy_id(wire_pkt, wire_len, &l3_pid) == 0) {
+                    if (crypto_l3_extract_policy_id(fwd->cfg, wire_pkt, wire_len, &l3_pid) == 0) {
                         int pi = policy_index_from_action_id_current(fwd, POLICY_ACTION_ENCRYPT_L3, l3_pid);
                         if (pi >= 0)
                             inbound_policy_pi = pi;
@@ -1824,7 +1820,7 @@ static void *wan_queue_thread_l3l4(void *arg) {
 
                 uint16_t l4_frag_pid;
                 uint8_t l4_frag_idx;
-                if (frag_is_fragment_l4(pkt, pkt_len, &l4_frag_pid, &l4_frag_idx)) {
+                if (frag_is_fragment_l4(fwd->cfg, pkt, pkt_len, &l4_frag_pid, &l4_frag_idx)) {
                     struct packet_crypto_ctx *l4ctx = forwarder_resolve_l4_decrypt_ctx(fwd, pkt, pkt_len);
                     if (!l4ctx) {
                         __sync_fetch_and_add(&fwd->total_dropped, 1);
@@ -1866,8 +1862,8 @@ static void *wan_queue_thread_l3l4(void *arg) {
                         uint8_t l3pid = 0;
                         int l4nonce = 0;
                         uint8_t l4pid = 0;
-                        int l3ok = (crypto_l3_extract_policy_id(wire_pkt, wire_len, &l3pid) == 0);
-                        int l4ok = (crypto_l4_extract_policy_id_ipv4(wire_pkt, wire_len, &l4pid, &l4nonce) == 0);
+                        int l3ok = (crypto_l3_extract_policy_id(fwd->cfg, wire_pkt, wire_len, &l3pid) == 0);
+                        int l4ok = (crypto_l4_extract_policy_id_ipv4(fwd->cfg, wire_pkt, wire_len, &l4pid, &l4nonce) == 0);
                         log_tcp_diag_decrypt("RX-DEC-FAIL",
                                              ds, dsp, dd, ddp,
                                              POLICY_ACTION_ENCRYPT_L4,
@@ -1890,7 +1886,7 @@ static void *wan_queue_thread_l3l4(void *arg) {
                 } else if (inbound_policy_pi < 0) {
                     uint8_t l4_pid = 0;
                     int l4_nonce = 0;
-                    if (crypto_l4_extract_policy_id_ipv4(wire_pkt, wire_len, &l4_pid, &l4_nonce) == 0) {
+                    if (crypto_l4_extract_policy_id_ipv4(fwd->cfg, wire_pkt, wire_len, &l4_pid, &l4_nonce) == 0) {
                         int pi = policy_index_from_action_id_current(fwd, POLICY_ACTION_ENCRYPT_L4, l4_pid);
                         if (pi >= 0)
                             inbound_policy_pi = pi;
@@ -2265,6 +2261,9 @@ release_local:
 }
 
 int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
+    if (forwarder_should_stop())
+        return -1;
+
     memset(fwd, 0, sizeof(*fwd));
     fwd->cfg = cfg;
     g_cfg_ptr = cfg;
@@ -2357,6 +2356,8 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
     total_threads += 1;
 
     for (int i = 0; i < cfg->local_count; i++) {
+        if (forwarder_should_stop())
+            goto err_locals;
         if (interface_init_local(&fwd->locals[i], &cfg->locals[i], cfg->bpf_file) != 0) {
             fprintf(stderr, "Failed to init LOCAL %s\n", cfg->locals[i].ifname);
             interface_cleanup(&fwd->locals[i]);
@@ -2372,6 +2373,8 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
 
     
     for (int i = 0; i < fwd->local_count; i++) {
+        if (forwarder_should_stop())
+            goto err_locals;
         if (arp_init_for_local(&g_arp[i], &fwd->locals[i], &running) == 0) {
             pthread_t tid;
             pthread_create(&tid, NULL, arp_listener_thread, &g_arp[i]);
@@ -2380,8 +2383,10 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
             local_log_arp_ready(&g_arp[i]);
             (void)local_config_fill_ipv4_from_iface(&cfg->locals[i]);
             lan_arp_resolve_policy_hosts(&g_arp[i], cfg, i);
+            local_sync_primary_peer_mac(&g_arp[i], cfg, i);
             memcpy(fwd->locals[i].src_mac, g_arp[i].if_mac, MAC_LEN);
             memcpy(cfg->locals[i].src_mac, g_arp[i].if_mac, MAC_LEN);
+            memcpy(fwd->locals[i].dst_mac, cfg->locals[i].dst_mac, MAC_LEN);
         } else {
             fprintf(stderr, "[LAN ARP] WARN: cannot init on %s\n",
                     fwd->locals[i].ifname);
@@ -2389,6 +2394,8 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
     }
 
     for (int i = 0; i < cfg->wan_count; i++) {
+        if (forwarder_should_stop())
+            goto err_wans;
         uint16_t wan_fake4 = (crypto_enabled && has_encrypt_l2) ? cfg->fake_ethertype_ipv4 : 0;
         const char *wan_bpf = (cfg->bpf_wan_file[0]) ? cfg->bpf_wan_file : "bpf/xdp_wan_redirect.o";
         if (interface_init_wan_rx(&fwd->wans[i], &cfg->wans[i], wan_bpf, wan_fake4) != 0) {
@@ -2405,6 +2412,8 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
 
 
     for (int i = 0; i < fwd->wan_count; i++) {
+        if (forwarder_should_stop())
+            goto err_wans;
         if (cfg->wans[i].dst_ip == 0)
             continue;
         if (arp_init_for_local(&g_wan_arp[i], &fwd->wans[i], &running) == 0) {
@@ -2426,6 +2435,9 @@ int forwarder_init(struct forwarder *fwd, struct app_config *cfg) {
             fprintf(stderr, "[ARP] WARN: cannot init WAN ARP on %s\n", cfg->wans[i].ifname);
         }
     }
+
+    if (forwarder_should_stop())
+        goto err_wans;
 
     return 0;
 
@@ -2560,7 +2572,7 @@ static void forwarder_run_no_crypto(struct forwarder *fwd) {
     }
 
     while (running)
-        sleep(1);
+        usleep(200000);
 
     for (int i = 0; i < total_threads; i++)
         pthread_join(threads[i], NULL);
@@ -2629,7 +2641,7 @@ static void forwarder_run_l2(struct forwarder *fwd) {
     }
 
     while (running)
-        sleep(1);
+        usleep(200000);
 
     for (int i = 0; i < total_threads; i++)
         pthread_join(threads[i], NULL);
@@ -2705,7 +2717,7 @@ static void forwarder_run_l3(struct forwarder *fwd) {
     thread_idx++;
 
     while (running)
-        sleep(1);
+        usleep(200000);
 
     for (int i = 0; i < total_threads; i++)
         pthread_join(threads[i], NULL);
@@ -2781,7 +2793,7 @@ static void forwarder_run_l4(struct forwarder *fwd) {
     thread_idx++;
 
     while (running)
-        sleep(1);
+        usleep(200000);
 
     for (int i = 0; i < total_threads; i++)
         pthread_join(threads[i], NULL);
@@ -2794,9 +2806,10 @@ static void forwarder_run_l4(struct forwarder *fwd) {
 
 
 void forwarder_run(struct forwarder *fwd) {
+    if (forwarder_should_stop())
+        return;
     running = 1;
-    signal(SIGINT, sigint_handler);
-    signal(SIGTERM, sigint_handler);
+    /* SIGINT/SIGTERM handled only in main.c (on_stop_signal). */
 
     if (!crypto_enabled) {
         forwarder_run_no_crypto(fwd);
@@ -2813,6 +2826,10 @@ void forwarder_run(struct forwarder *fwd) {
 
 void forwarder_stop(void) {
     running = 0;
+}
+
+int forwarder_should_stop(void) {
+    return !running;
 }
 
 void forwarder_print_stats(struct forwarder *fwd) {

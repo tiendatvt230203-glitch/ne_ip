@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <time.h>
+#include "config.h"
 #include "packet_crypto.h"
 #include "crypto_layer4.h"
 #include "crypto_layer2.h"
@@ -65,7 +66,8 @@ int frag_split_and_encrypt(struct packet_crypto_ctx *ctx,
                            uint8_t *frag1, uint32_t *frag1_len,
                            uint8_t *frag2, uint32_t *frag2_len);
 
-int frag_is_fragment(const uint8_t *pkt_data, uint32_t pkt_len,
+int frag_is_fragment(const struct app_config *cfg,
+                     const uint8_t *pkt_data, uint32_t pkt_len,
                      uint16_t *pkt_id, uint8_t *frag_index);
 
 int frag_try_reassemble(struct frag_table *ft,
@@ -78,7 +80,8 @@ int frag_split_and_encrypt_l4(struct packet_crypto_ctx *ctx,
                               uint8_t *frag1, uint32_t *frag1_len,
                               uint8_t *frag2, uint32_t *frag2_len);
 
-int frag_is_fragment_l4(const uint8_t *pkt_data, uint32_t pkt_len,
+int frag_is_fragment_l4(const struct app_config *cfg,
+                        const uint8_t *pkt_data, uint32_t pkt_len,
                         uint16_t *pkt_id, uint8_t *frag_index);
 
 int frag_try_reassemble_l4(struct frag_table *ft,
@@ -91,7 +94,8 @@ int frag_split_and_encrypt_l2(struct packet_crypto_ctx *ctx,
                               uint8_t *frag1, uint32_t *frag1_len,
                               uint8_t *frag2, uint32_t *frag2_len);
 
-int frag_is_fragment_l2(const uint8_t *pkt_data, uint32_t pkt_len,
+int frag_is_fragment_l2(const struct app_config *cfg,
+                        const uint8_t *pkt_data, uint32_t pkt_len,
                         uint16_t *pkt_id, uint8_t *frag_index);
 
 int frag_try_reassemble_l2(struct frag_table *ft,

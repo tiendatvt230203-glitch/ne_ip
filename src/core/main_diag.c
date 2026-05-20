@@ -109,12 +109,12 @@ static void log_wan_peer_macs(const struct app_config *cfg) {
     }
 }
 
-static void log_local_macs(const struct app_config *cfg) {
+static void log_local_peer_macs(const struct app_config *cfg) {
     for (int i = 0; i < cfg->local_count; i++) {
         const struct local_config *l = &cfg->locals[i];
-        char mac[32];
-        fmt_mac(mac, sizeof(mac), l->src_mac);
-        fprintf(stderr, "[LAN] %s mac=%s\n", l->ifname, mac);
+        char peer_mac[32];
+        fmt_mac(peer_mac, sizeof(peer_mac), l->dst_mac);
+        fprintf(stderr, "[LAN] %s peer_mac=%s\n", l->ifname, peer_mac);
     }
 }
 
@@ -180,5 +180,5 @@ void main_diag_log_link_macs(struct app_config *cfg) {
     if (!cfg)
         return;
     log_wan_peer_macs(cfg);
-    log_local_macs(cfg);
+    log_local_peer_macs(cfg);
 }

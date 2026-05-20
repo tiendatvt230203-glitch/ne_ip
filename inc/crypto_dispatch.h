@@ -24,10 +24,14 @@ struct crypto_dispatch_ctx {
 };
 
 
-int crypto_l3_extract_policy_id(uint8_t *pkt, uint32_t pkt_len, uint8_t *policy_id_out);
+int crypto_l3_extract_policy_id(const struct app_config *cfg,
+                                uint8_t *pkt,
+                                uint32_t pkt_len,
+                                uint8_t *policy_id_out);
 
 
-int crypto_l4_extract_policy_id_ipv4(uint8_t *pkt,
+int crypto_l4_extract_policy_id_ipv4(const struct app_config *cfg,
+                                      uint8_t *pkt,
                                       uint32_t pkt_len,
                                       uint8_t *policy_id_out,
                                       int *nonce_size_out);

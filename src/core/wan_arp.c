@@ -310,6 +310,8 @@ static void log_peer_arp_resolved(struct arp_cache *c,
 
     uint8_t mac[6];
     for (int tries = 0; tries < 10; tries++) {
+        if (forwarder_should_stop())
+            return;
         if (arp_cache_lookup(c, peer_ip, mac))
             return;
         arp_send_request(c, peer_ip);
@@ -329,6 +331,39 @@ static int ip_on_local_subnet(const struct local_config *loc, uint32_t ip) {
     if (!loc || ip == 0 || loc->netmask == 0)
         return 0;
     return ((ip & loc->netmask) == loc->network);
+}
+
+void local_sync_primary_peer_mac(struct arp_cache *c,
+                                 struct app_config *cfg,
+                                 int local_idx) {
+    if (!c || !cfg || local_idx < 0 || local_idx >= cfg->local_count)
+        return;
+
+    struct local_config *loc = &cfg->locals[local_idx];
+    memset(loc->dst_mac, 0, MAC_LEN);
+
+    for (int pi = 0; pi < cfg->policy_count; pi++) {
+        const struct crypto_policy *p = &cfg->policies[pi];
+        uint32_t hosts[2];
+        int nhosts = 0;
+
+        if (!p->src_any && p->src_mask == htonl(0xffffffffu))
+            hosts[nhosts++] = p->src_net;
+        if (!p->dst_any && p->dst_mask == htonl(0xffffffffu))
+            hosts[nhosts++] = p->dst_net;
+
+        for (int h = 0; h < nhosts; h++) {
+            uint32_t ip = hosts[h];
+            uint8_t mac[MAC_LEN];
+
+            if (ip == 0 || !ip_on_local_subnet(loc, ip))
+                continue;
+            if (!arp_cache_lookup(c, ip, mac))
+                continue;
+            memcpy(loc->dst_mac, mac, MAC_LEN);
+            return;
+        }
+    }
 }
 
 void lan_arp_resolve_policy_hosts(struct arp_cache *c,
@@ -353,6 +388,8 @@ void lan_arp_resolve_policy_hosts(struct arp_cache *c,
             hosts[nhosts++] = p->dst_net;
 
         for (int h = 0; h < nhosts; h++) {
+            if (forwarder_should_stop())
+                return;
             uint32_t ip = hosts[h];
             if (ip == 0 || !ip_on_local_subnet(loc, ip))
                 continue;

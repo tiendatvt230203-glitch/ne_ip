@@ -164,8 +164,7 @@ int crypto_layer4_encrypt(struct packet_crypto_ctx *ctx, uint8_t *packet, size_t
     size_t ip_payload_len = L4_WIRE_PORT_LEN + (size_t)total_overhead + plain_len;
     l4_fix_ipv4_totlen_and_cksum(packet, l3_off, ip_hdr_len, ip_payload_len);
 
-    size_t shrink = (size_t)(transport_hdr_size - L4_WIRE_PORT_LEN);
-    return (int)(pkt_len + (size_t)total_overhead - shrink);
+    return (int)(pkt_len + (size_t)total_overhead);
 }
 
 int crypto_layer4_decrypt(struct packet_crypto_ctx *ctx, uint8_t *packet, size_t pkt_len) {

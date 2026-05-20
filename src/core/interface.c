@@ -1,5 +1,6 @@
 #include "../../inc/interface.h"
 #include "../../inc/config.h"
+#include "../../inc/forwarder.h"
 #include "../../inc/xdp_encrypt_maps.h"
 #include <poll.h>
 #include <sched.h>
@@ -938,7 +939,8 @@ int interface_recv(struct xsk_interface *iface,
             fds[q].fd = xsk_socket__fd(iface->queues[q].xsk);
             fds[q].events = POLLIN;
         }
-        if (poll(fds, iface->queue_count, 1) <= 0)
+        int poll_ms = forwarder_should_stop() ? 100 : 1000;
+        if (poll(fds, iface->queue_count, poll_ms) <= 0)
             return 0;
 
         for (int q = 0; q < iface->queue_count && total_rcvd < max_pkts; q++) {
@@ -1312,7 +1314,8 @@ int interface_recv_single_queue(struct xsk_interface *iface, int queue_idx,
             .fd = xsk_socket__fd(queue->xsk),
             .events = POLLIN
         };
-        if (poll(&pfd, 1, 1) <= 0)
+        int poll_ms = forwarder_should_stop() ? 100 : 1000;
+        if (poll(&pfd, 1, poll_ms) <= 0)
             return 0;
 
         rcvd = xsk_ring_cons__peek(&queue->rx, max_pkts, &idx_rx);

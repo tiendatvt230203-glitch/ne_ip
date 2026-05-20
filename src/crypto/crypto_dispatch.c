@@ -34,8 +34,11 @@ static int lookup_policy_index(const struct crypto_dispatch_ctx *dctx,
     return -1;
 }
 
-int crypto_l3_extract_policy_id(uint8_t *pkt, uint32_t pkt_len, uint8_t *policy_id_out) {
-    if (!pkt || !policy_id_out || pkt_len < 14 + 20)
+int crypto_l3_extract_policy_id(const struct app_config *cfg,
+                                uint8_t *pkt,
+                                uint32_t pkt_len,
+                                uint8_t *policy_id_out) {
+    if (!cfg || !pkt || !policy_id_out || pkt_len < 14 + 20)
         return -1;
 
     if ((((uint16_t)pkt[12] << 8) | pkt[13]) != 0x0800)
@@ -52,21 +55,34 @@ int crypto_l3_extract_policy_id(uint8_t *pkt, uint32_t pkt_len, uint8_t *policy_
     if (pkt[l3_off + 9] != marker)
         return -1;
 
-    int nonce_size = packet_crypto_get_nonce_size();
     int tunnel_hdr_size = packet_crypto_get_tunnel_hdr_size();
     int tunnel_off = l3_off + ip_hdr_len;
     if (pkt_len < (uint32_t)(tunnel_off + tunnel_hdr_size))
         return -1;
 
-    *policy_id_out = pkt[tunnel_off + nonce_size];
-    return 0;
+    for (int pi = 0; pi < cfg->policy_count && pi < MAX_CRYPTO_POLICIES; pi++) {
+        const struct crypto_policy *cp = &cfg->policies[pi];
+        if (!cp || cp->action != POLICY_ACTION_ENCRYPT_L3 || cp->nonce_size <= 0)
+            continue;
+        int ns = cp->nonce_size;
+        if (tunnel_off + ns + 1 >= (int)pkt_len)
+            continue;
+        if (pkt[tunnel_off + ns + 1] != CRYPTO_L3_TUNNEL_MAGIC)
+            continue;
+        if (pkt[tunnel_off + ns] != (uint8_t)cp->id)
+            continue;
+        *policy_id_out = (uint8_t)cp->id;
+        return 0;
+    }
+    return -1;
 }
 
-int crypto_l4_extract_policy_id_ipv4(uint8_t *pkt,
+int crypto_l4_extract_policy_id_ipv4(const struct app_config *cfg,
+                                      uint8_t *pkt,
                                       uint32_t pkt_len,
                                       uint8_t *policy_id_out,
                                       int *nonce_size_out) {
-    if (!pkt || !policy_id_out || !nonce_size_out)
+    if (!cfg || !pkt || !policy_id_out || !nonce_size_out)
         return -1;
 
     int l3_off = crypto_eth_ipv4_offset(pkt, pkt_len);
@@ -86,19 +102,23 @@ int crypto_l4_extract_policy_id_ipv4(uint8_t *pkt,
 
     int transport_off = l3_off + ip_hdr_len;
     int wire_port_len = crypto_layer4_wire_port_len();
-    int candidates[4] = {4, 8, 12, 16};
 
     int tunnel_off = transport_off + wire_port_len;
     if (tunnel_off >= (int)pkt_len)
         return -1;
 
-    for (int i = 0; i < 4; i++) {
-        int ns = candidates[i];
+    for (int pi = 0; pi < cfg->policy_count && pi < MAX_CRYPTO_POLICIES; pi++) {
+        const struct crypto_policy *cp = &cfg->policies[pi];
+        if (!cp || cp->action != POLICY_ACTION_ENCRYPT_L4 || cp->nonce_size <= 0)
+            continue;
+        int ns = cp->nonce_size;
         if (tunnel_off + ns + 1 >= (int)pkt_len)
             continue;
         if (pkt[tunnel_off + ns + 1] == CRYPTO_L4_TUNNEL_MAGIC) {
+            if (pkt[tunnel_off + ns] != (uint8_t)cp->id)
+                continue;
             *nonce_size_out = ns;
-            *policy_id_out = pkt[tunnel_off + ns];
+            *policy_id_out = (uint8_t)cp->id;
             return 0;
         }
     }
@@ -127,7 +147,7 @@ int crypto_decrypt_packet_auto_by_action(
 
     if (action_layer == POLICY_ACTION_ENCRYPT_L3) {
         uint8_t policy_id = 0;
-        if (crypto_l3_extract_policy_id(pkt, *pkt_len, &policy_id) != 0)
+        if (crypto_l3_extract_policy_id(cfg, pkt, *pkt_len, &policy_id) != 0)
             return 0;
         int pi = lookup_policy_index(dctx,
                                      dctx->policies, dctx->policy_count,
@@ -177,20 +197,13 @@ int crypto_decrypt_packet_auto_by_action(
             return 0;
 
         int transport_off = l3_off + ip_hdr_len;
-
-        int tcp_hdr_len = 0;
-        if (ip_proto == 6) {
-            if (*pkt_len < (uint32_t)(transport_off + 20))
-                return 0;
-            tcp_hdr_len = ((pkt[transport_off + 12] >> 4) & 0x0F) * 4;
-            if (tcp_hdr_len < 20)
-                return 0;
-        }
+        if (*pkt_len < (uint32_t)(transport_off + 4))
+            return 0;
 
 
         uint8_t policy_id = 0;
         int nonce_size = 0;
-        if (crypto_l4_extract_policy_id_ipv4(pkt, *pkt_len, &policy_id, &nonce_size) != 0)
+        if (crypto_l4_extract_policy_id_ipv4(cfg, pkt, *pkt_len, &policy_id, &nonce_size) != 0)
             return 0;
         int pi = lookup_policy_index(dctx,
                                      dctx->policies, dctx->policy_count,

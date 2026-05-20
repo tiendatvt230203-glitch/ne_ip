@@ -15,17 +15,23 @@
 #include "db_env.h"
 #include "db_runtime.h"
 #include "forwarder.h"
+#include "interface.h"
 #include "main_diag.h"
 
 #define NOTIFY_CHANNEL "xdp_start"
 #define MAX_ACTIVE_PROFILE_IDS 32
 
 static volatile sig_atomic_t g_stop_requested = 0;
+static volatile sig_atomic_t g_stop_logged = 0;
 
 static void on_stop_signal(int sig) {
     (void)sig;
     g_stop_requested = 1;
     forwarder_stop();
+    if (!g_stop_logged) {
+        g_stop_logged = 1;
+        fprintf(stderr, "\n[STOP] shutting down (Ctrl+C / SIGTERM)\n");
+    }
 }
 
 static int parse_notify_profile_id(const char *payload) {
@@ -175,11 +181,25 @@ static void *forwarder_thread_main(void *arg) {
     forwarder_pin_cpu();
     struct runtime_state *rt = (struct runtime_state *)arg;
     if (forwarder_init(&rt->fwd, &rt->cfg_slots[rt->active_slot]) != 0) {
-        fprintf(stderr, "[FATAL] forwarder_init failed\n");
+        if (forwarder_should_stop())
+            fprintf(stderr, "[STOP] forwarder init aborted\n");
+        else
+            fprintf(stderr, "[FATAL] forwarder_init failed\n");
+        rt->running = 0;
+        return NULL;
+    }
+    if (forwarder_should_stop()) {
+        fprintf(stderr, "[STOP] forwarder init aborted\n");
+        forwarder_cleanup(&rt->fwd);
         rt->running = 0;
         return NULL;
     }
     main_diag_log_link_macs(&rt->cfg_slots[rt->active_slot]);
+    if (forwarder_should_stop()) {
+        forwarder_cleanup(&rt->fwd);
+        rt->running = 0;
+        return NULL;
+    }
     rt->running = 1;
     forwarder_run(&rt->fwd);
     forwarder_cleanup(&rt->fwd);
@@ -237,12 +257,26 @@ static int apply_active_configs(struct runtime_state *rt, const int *active_ids,
     return -1;
 }
 
+static void runtime_detach_xdp_from_config(const struct runtime_state *rt) {
+    if (!rt)
+        return;
+    const struct app_config *cfg = &rt->cfg_slots[rt->active_slot];
+    if (cfg->local_count == 0 && cfg->wan_count == 0)
+        return;
+    interface_xdp_detach_all_from_config(cfg);
+    for (int i = 0; i < cfg->local_count; i++)
+        fprintf(stderr, "[STOP] XDP detached LAN %s\n", cfg->locals[i].ifname);
+    for (int i = 0; i < cfg->wan_count; i++)
+        fprintf(stderr, "[STOP] XDP detached WAN %s\n", cfg->wans[i].ifname);
+}
+
 static int runtime_stop_forwarder(struct runtime_state *rt) {
     if (!rt->has_thread)
         return 0;
 
     forwarder_stop();
     pthread_join(rt->thread, NULL);
+    runtime_detach_xdp_from_config(rt);
     rt->has_thread = 0;
     rt->running = 0;
     return 0;

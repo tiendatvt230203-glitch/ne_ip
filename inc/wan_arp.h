@@ -61,5 +61,10 @@ void lan_arp_resolve_policy_hosts(struct arp_cache *c,
                                   struct app_config *cfg,
                                   int local_idx);
 
+/* Copy first resolved policy-host MAC on this LAN into cfg->locals[local_idx].dst_mac. */
+void local_sync_primary_peer_mac(struct arp_cache *c,
+                                 struct app_config *cfg,
+                                 int local_idx);
+
 #endif
 
